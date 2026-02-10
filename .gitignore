@@ -39,3 +39,25 @@
 
 # debug information files
 *.dwo
+
+# Build
+build/
+cmake-build-*/
+external/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Private project planning (not for public)
+PROJECT.md
+
+# AI tooling configs (personal dev environment)
+.claude/
+.claude_*
+skills/
+agents/
+.mcp*
+mcp.json
