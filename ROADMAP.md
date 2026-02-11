@@ -57,53 +57,46 @@ This roadmap is structured for incremental development with testable deliverable
 
 ---
 
-## Phase 2 — Market Data Loading & Return Computation
+## Phase 2 — Market Data Loading & Return Computation ✅
 
-**Goal:** Load historical price CSV → compute return matrix → estimate covariance. CPU-only, no CUDA yet.
+**Status:** Complete (data layer: CSV loading, returns, universe)
 
-### Tasks
+**Goal:** Load historical price CSV → compute return matrix. CPU-only, no CUDA yet.
 
-1. `src/data/market_data_loader.h/cpp`:
-   - Parse CSV (date, ticker columns with adjusted close prices)
-   - Output: `Eigen::MatrixXd` of prices (rows = dates, cols = assets)
-   - Handle missing data: forward-fill or drop
-   - Support Yahoo Finance CSV format
-2. `src/data/return_computation.h/cpp`:
-   - Simple returns: r_t = (P_t - P_{t-1}) / P_{t-1}
-   - Log returns: r_t = ln(P_t / P_{t-1})
-   - Excess returns: r_t - r_f (risk-free rate from config)
-3. `src/data/universe.h/cpp`:
-   - Asset universe definition: ticker list, sector mapping
-   - Load from JSON config
-4. `src/models/sample_estimator.h/cpp`:
-   - Sample mean vector μ̂
-   - Sample covariance matrix Σ̂ = (1/(T-1)) Σ(r_t - μ̂)(r_t - μ̂)ᵀ
-5. `src/models/shrinkage_estimator.h/cpp`:
-   - Ledoit-Wolf shrinkage: Σ_shrink = δF + (1-δ)S
-   - F = structured target (e.g., diagonal or constant correlation)
-   - δ = optimal shrinkage intensity (Ledoit-Wolf 2004, Theorem 1)
-6. `src/core/config.h/cpp`:
-   - JSON config parsing with nlohmann/json
-   - Config struct: data path, universe, estimation method, parameters
-7. `scripts/download_data.py`:
-   - Download S&P 500 historical prices via yfinance
-   - Output: CSV in `data/` directory
-   - Also generate small test datasets (2-asset, 5-asset, 10-asset)
+### Implemented
 
-### Tests
+1. `src/data/market_data.h`:
+   - `PriceData` struct: dates, tickers, prices (MatrixXd, T x N)
+   - `ReturnData` struct: dates, tickers, returns (MatrixXd, T-1 x N), return_type
+   - Enums: `MissingDataPolicy` (kDropRows, kForwardFill), `ReturnType` (kSimple, kLog)
+2. `src/data/csv_loader.h/cpp`:
+   - `load_csv_prices(path, policy)` — load all tickers from wide-format CSV
+   - `load_csv_prices(path, tickers, policy)` — filter to specific tickers
+   - `load_csv_prices(path, universe, policy)` — filter by universe (tickers + date range)
+   - Handles: Windows \r\n, UTF-8 BOM, non-positive price warnings, locale-safe parsing
+   - Missing data: kDropRows removes rows with any gap; kForwardFill uses previous day's price
+3. `src/data/returns.h/cpp`:
+   - `compute_returns(PriceData, ReturnType)` → ReturnData (with metadata)
+   - `compute_returns(MatrixXd, ReturnType)` → MatrixXd (raw matrix overload)
+   - `compute_excess_returns(ReturnData, risk_free_rate, periods_per_year)` → ReturnData
+   - End-of-period date convention for return labeling
+4. `src/data/universe.h/cpp`:
+   - `Universe` struct: tickers, start_date, end_date
+   - `load_universe(json_path)` — JSON config via nlohmann/json
 
-- `test_return_computation.cpp`: known price sequence → verify returns match hand calculation
-- `test_covariance_estimators.cpp`:
-  - Sample covariance of perfectly correlated assets → correlation = 1.0
-  - Shrinkage estimator produces positive definite matrix
-  - Shrinkage with δ=0 recovers sample covariance
-  - Shrinkage with δ=1 recovers structured target
+### Tests (16 passing)
 
-### Definition of Done
+- `tests/test_data.cpp`:
+  - CSV loading: dimensions, values, ticker filtering, universe filtering, missing data (both policies), error cases
+  - Returns: simple vs log (verified against hand-computed values to 1e-10), matrix overload, excess returns, edge cases
+  - Universe: JSON loading, nonexistent file
+- Test fixtures: `tests/data/prices_2asset.csv`, `prices_5asset.csv`, `prices_missing.csv`, `universe_test.json`
 
-- Load SP500 CSV, compute log returns, estimate covariance — all in < 1 second for 5 years daily data
-- Covariance matrix is symmetric positive definite (Cholesky succeeds)
-- Shrinkage estimator matches reference Python implementation (numpy) to 1e-10
+### Deferred to Later Phases
+
+- Sample/shrinkage covariance estimators → Phase 2b or Phase 3
+- Config struct (config.h) → when CLI apps need it
+- `scripts/download_data.py` → when real SP500 data is needed
 
 ---
 

@@ -1,5 +1,8 @@
 add_library(cuda_portfolio_lib STATIC
     utils/cuda_utils.cu
+    data/csv_loader.cpp
+    data/returns.cpp
+    data/universe.cpp
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC

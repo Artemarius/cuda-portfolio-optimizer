@@ -1,0 +1,5 @@
+{
+    "tickers": ["AAPL", "GOOG", "TSLA"],
+    "start_date": "2023-01-04",
+    "end_date": "2023-01-10"
+}
