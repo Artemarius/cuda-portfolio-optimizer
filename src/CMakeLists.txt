@@ -3,6 +3,9 @@ add_library(cuda_portfolio_lib STATIC
     data/csv_loader.cpp
     data/returns.cpp
     data/universe.cpp
+    simulation/cholesky_utils.cpp
+    simulation/scenario_matrix.cu
+    simulation/monte_carlo.cu
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC

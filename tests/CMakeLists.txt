@@ -16,3 +16,10 @@ target_compile_definitions(test_data PRIVATE
     TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 gtest_discover_tests(test_data)
+
+add_executable(test_monte_carlo test_monte_carlo.cpp)
+target_link_libraries(test_monte_carlo PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_monte_carlo)
