@@ -8,7 +8,7 @@ src/
   data/          — Market data loader (CSV), return computation, universe definition
   models/        — Return distribution models: PCA factor model, factor Monte Carlo, tiled generation
   simulation/    — GPU Monte Carlo scenario generator (correlated returns via Cholesky + cuRAND)
-  risk/          — CVaR computation (CUDA), VaR, volatility, drawdown metrics
+  risk/          — CVaR computation (CUDA), VaR, volatility, component CVaR decomposition
   optimizer/     — Convex optimizer: ADMM solver (C++/CUDA), projections, efficient frontier
   constraints/   — Portfolio constraints: position limits, leverage, turnover, sector
   backtest/      — Rolling-window backtesting engine with transaction costs
@@ -38,7 +38,7 @@ Library and executables are separate — `apps/` links against `cuda_portfolio_l
 - **Windows primary** (Visual Studio 2022 / Ninja), but no platform-specific APIs — code is de facto portable
 - **CMake 3.20+** with native CUDA language support (`project(... LANGUAGES CXX CUDA)`) — do NOT use `find_package(CUDA)`
 - **FetchContent** for all dependencies except CUDA toolkit components — repo must be self-contained
-- **Custom CUDA kernels** for Monte Carlo simulation and CVaR computation — no cuOpt or external solver libraries
+- **Custom CUDA kernels** for Monte Carlo simulation, CVaR computation, and component CVaR decomposition — no cuOpt or external solver libraries
 - **Eigen3** for CPU-side linear algebra (covariance matrices, Cholesky decomposition)
 - **cuRAND** for GPU random number generation
 - **CUB** for GPU sort and reduction primitives (ships with CUDA 12.8)
@@ -104,6 +104,7 @@ ctest --test-dir build -C Release --output-on-failure
 # GPU vs CPU benchmarks
 ./build/Release/bench_monte_carlo
 ./build/Release/bench_factor_model
+./build/Release/bench_admm
 ```
 
 ## Dependencies
@@ -151,10 +152,12 @@ No VRAM pressure. For scaling beyond 500 assets or 500K scenarios, tiled generat
 - **cuRAND state:** initialize once, store in device memory, reuse across optimizer iterations. Initialization is expensive (~2ms for 100K states).
 - **Weight vector:** small enough (500 × 4 = 2KB) to fit in shared memory for the loss computation kernel.
 - **ADMM buffers (`GpuAdmmBuffers`):** pre-allocated once per `admm_solve` call — `d_weights` (float), `d_sum_excess` (double), `d_grad_w` (double × N_assets), `d_count` (int). Zeroed via `cudaMemset` + weights uploaded via `cudaMemcpy` each inner step. Eliminates ~6000 cudaMalloc/cudaFree pairs per solve.
+- **Component CVaR buffers:** `d_component` (double × N_assets) accumulators + `d_tail_count` (int). Two-pass threshold: reuses d_losses from risk pipeline, `atomicAdd` double-precision per-asset contributions for tail scenarios.
 
 ## Key Mathematical References
 
 - **CVaR (Conditional Value-at-Risk):** CVaR_α = E[L | L ≥ VaR_α] — average loss in the worst α% of scenarios
+- **Component CVaR:** CVaR_j = w_j × (1/n_tail) × Σ_{i∈tail}(−r_{i,j}). Property: Σ_j CVaR_j = total CVaR. See: Tasche, *Risk Contributions and Performance Measurement*, 2000
 - **Mean-CVaR optimization:** min CVaR_α(w) s.t. E[r'w] ≥ μ_target, constraints on w
 - **Rockafellar-Uryasev formulation:** reformulates CVaR minimization as a linear program over scenarios. See: Rockafellar & Uryasev, *Optimization of Conditional Value-at-Risk*, J. Risk 2000
 - **Cholesky decomposition:** Σ = LLᵀ → correlated samples = L × z where z ~ N(0,I)

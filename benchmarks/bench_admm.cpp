@@ -140,6 +140,41 @@ BENCHMARK(BM_FullPipeline)
     ->Args({10, 50000})
     ->Unit(benchmark::kMillisecond);
 
+// ── Full pipeline GPU: scenario generation + ADMM solve ─────────────
+
+static void BM_FullPipeline_GPU(benchmark::State& state) {
+    const Index n_assets = static_cast<Index>(state.range(0));
+    const Index n_scenarios = static_cast<Index>(state.range(1));
+
+    auto [mu, chol] = make_test_data(n_assets);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 42;
+
+    AdmmConfig admm_cfg;
+    admm_cfg.confidence_level = 0.95;
+    admm_cfg.max_iter = 300;
+
+    // Pre-allocate cuRAND states outside the timing loop.
+    auto curand_states = create_curand_states(n_scenarios, mc_cfg.seed);
+
+    for (auto _ : state) {
+        // GPU scenario generation + GPU ADMM solve end-to-end.
+        auto gpu_scenarios = generate_scenarios_gpu(
+            mu, chol, mc_cfg, curand_states.get());
+        auto result = admm_solve(gpu_scenarios, mu, admm_cfg);
+        benchmark::DoNotOptimize(result.weights.data());
+        benchmark::ClobberMemory();
+    }
+}
+
+// Full pipeline GPU: 5/10 assets x 50K scenarios
+BENCHMARK(BM_FullPipeline_GPU)
+    ->Args({5, 50000})
+    ->Args({10, 50000})
+    ->Unit(benchmark::kMillisecond);
+
 // ── GPU ADMM benchmarks ─────────────────────────────────────────────
 
 static void BM_AdmmSolve_GPU(benchmark::State& state) {

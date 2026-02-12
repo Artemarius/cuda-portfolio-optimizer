@@ -9,6 +9,7 @@ add_library(cuda_portfolio_lib STATIC
     risk/device_vector.cu
     risk/portfolio_loss.cu
     risk/cvar.cu
+    risk/component_cvar.cu
     optimizer/projections.cpp
     optimizer/objective.cpp
     optimizer/admm_solver.cpp

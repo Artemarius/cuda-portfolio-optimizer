@@ -50,4 +50,19 @@ void write_optimize_result_json(const AdmmResult& result,
                                 const std::vector<std::string>& tickers,
                                 const std::string& path);
 
+/// Write a single optimization result to JSON with component CVaR.
+void write_optimize_result_json(const AdmmResult& result,
+                                const VectorXd& mu,
+                                const std::vector<std::string>& tickers,
+                                const VectorXd& component_cvar,
+                                const std::string& path);
+
+/// Write per-asset risk decomposition to CSV.
+///
+/// Columns: ticker, weight, component_cvar, pct_contribution
+void write_risk_decomposition_csv(const VectorXd& weights,
+                                   const VectorXd& component_cvar,
+                                   const std::vector<std::string>& tickers,
+                                   const std::string& path);
+
 }  // namespace cpo

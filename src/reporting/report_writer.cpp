@@ -196,4 +196,79 @@ void write_optimize_result_json(const AdmmResult& result,
     ofs << j.dump(2) << "\n";
 }
 
+void write_optimize_result_json(const AdmmResult& result,
+                                const VectorXd& mu,
+                                const std::vector<std::string>& tickers,
+                                const VectorXd& component_cvar,
+                                const std::string& path) {
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("write_optimize_result_json: cannot open " + path);
+    }
+
+    nlohmann::json j;
+    j["converged"] = result.converged;
+    j["iterations"] = result.iterations;
+    j["cvar"] = result.cvar;
+    j["expected_return"] = result.expected_return;
+    j["zeta"] = result.zeta;
+
+    // Weights as object {ticker: weight}.
+    nlohmann::json w_obj = nlohmann::json::object();
+    for (size_t i = 0; i < tickers.size(); ++i) {
+        w_obj[tickers[i]] = result.weights(static_cast<Index>(i));
+    }
+    j["weights"] = w_obj;
+
+    // Weights as array.
+    std::vector<double> w_arr(result.weights.data(),
+                               result.weights.data() + result.weights.size());
+    j["weights_array"] = w_arr;
+
+    // Input mu.
+    std::vector<double> mu_arr(mu.data(), mu.data() + mu.size());
+    j["mu"] = mu_arr;
+    j["tickers"] = tickers;
+
+    // Component CVaR as object {ticker: value}.
+    nlohmann::json cc_obj = nlohmann::json::object();
+    for (size_t i = 0; i < tickers.size(); ++i) {
+        cc_obj[tickers[i]] = component_cvar(static_cast<Index>(i));
+    }
+    j["component_cvar"] = cc_obj;
+
+    // Component CVaR as array.
+    std::vector<double> cc_arr(component_cvar.data(),
+                                component_cvar.data() + component_cvar.size());
+    j["component_cvar_array"] = cc_arr;
+
+    ofs << j.dump(2) << "\n";
+}
+
+void write_risk_decomposition_csv(const VectorXd& weights,
+                                   const VectorXd& component_cvar,
+                                   const std::vector<std::string>& tickers,
+                                   const std::string& path) {
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("write_risk_decomposition_csv: cannot open " + path);
+    }
+
+    ofs << std::fixed << std::setprecision(8);
+    ofs << "ticker,weight,component_cvar,pct_contribution\n";
+
+    double total_cvar = component_cvar.sum();
+
+    for (size_t i = 0; i < tickers.size(); ++i) {
+        Index idx = static_cast<Index>(i);
+        double pct = (std::abs(total_cvar) > 1e-15)
+                         ? component_cvar(idx) / total_cvar * 100.0
+                         : 0.0;
+        ofs << tickers[i] << ","
+            << weights(idx) << ","
+            << component_cvar(idx) << ","
+            << pct << "\n";
+    }
+}
+
 }  // namespace cpo

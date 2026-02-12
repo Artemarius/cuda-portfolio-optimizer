@@ -64,7 +64,7 @@ src/
   reporting/     Efficient frontier, risk decomposition, strategy comparison (CSV/JSON)
   utils/         Timer, logging, CUDA helpers
 apps/            CLI executables (optimize, backtest)
-tests/           Google Test unit tests (168 tests)
+tests/           Google Test unit tests (173 tests)
 benchmarks/      GPU vs CPU performance comparison (Google Benchmark)
 scripts/         Python helpers: cvxpy validation, data generation, plotting
 ```
@@ -75,7 +75,7 @@ scripts/         Python helpers: cvxpy validation, data generation, plotting
 
 **Factor Model (PCA)** -- PCA-based covariance estimation: R = Bf + eps, Sigma = B*Sigma_f*B' + diag(D). Reduces estimation from N(N+1)/2 to Nk + k(k+1)/2 + N parameters. Auto-selection of k by variance explained threshold. Factor-based Monte Carlo kernel: O(Nk) per scenario vs O(N^2) for full Cholesky -- **15.6x speedup at 500 assets**.
 
-**Risk Computation (CUDA)** -- Portfolio loss computation: one CUDA thread per scenario. VaR and CVaR via GPU-accelerated sort (CUB) + reduction.
+**Risk Computation (CUDA)** -- Portfolio loss computation: one CUDA thread per scenario. VaR and CVaR via GPU-accelerated sort (CUB) + reduction. Component CVaR decomposition: per-asset risk contribution via two-pass threshold kernel (sum of components = total CVaR).
 
 **ADMM Optimizer (C++/CUDA)** -- Rockafellar-Uryasev formulation of Mean-CVaR. ADMM with proximal gradient x-update evaluated on GPU via pre-allocated device buffers (~6000 kernel calls per solve, zero malloc/free overhead). CPU z-update/u-update (cheap projections). Dykstra's alternating projection for constraint handling. Supports position limits, turnover, and sector exposure bounds.
 
@@ -96,30 +96,35 @@ scripts/         Python helpers: cvxpy validation, data generation, plotting
 
 GPU advantage grows with problem size. At 50K x 100, GPU is 12.5x faster. The 10K x 50 case is too small to offset kernel launch overhead.
 
-### ADMM Optimization (CPU path, converged)
+### ADMM Optimization (converged)
 
-| Assets | Scenarios | Time | Iterations |
-|---|---|---|---|
-| 2 | 10K | 57 ms | 65 |
-| 5 | 10K | 55 ms | 46 |
-| 10 | 10K | 64 ms | 40 |
-| 5 | 50K | 286 ms | 42 |
-| 10 | 50K | 406 ms | 44 |
+| Assets | Scenarios | CPU | GPU | Iters |
+|---|---|---|---|---|
+| 2 | 10K | 46 ms | 312 ms | 65 |
+| 2 | 50K | 207 ms | 286 ms | 54 |
+| 5 | 10K | 43 ms | 229 ms | 46 |
+| 5 | 50K | 214 ms | 245 ms | 42 |
+| 10 | 10K | 51 ms | 219 ms | 40 |
+| 10 | 50K | 297 ms | 359 ms | 44 |
+
+At these problem sizes the GPU x-update overhead (kernel launch, host-device sync per ADMM iteration) exceeds the compute savings. The GPU path pays off at higher asset/scenario counts where the per-iteration matrix-vector product dominates.
 
 ### Efficient Frontier (5 points, 20K scenarios)
 
-| Assets | Time | Total Iterations |
-|---|---|---|
-| 3 | 414 ms | 200 |
-| 5 | 771 ms | 310 |
-| 10 | 1,233 ms | 375 |
+| Assets | CPU | GPU | Total Iterations |
+|---|---|---|---|
+| 3 | 359 ms | 1,250 ms | ~200 |
+| 5 | 562 ms | 2,266 ms | ~310 |
+| 10 | 1,031 ms | 3,094 ms | ~375 |
 
 ### Full Pipeline (scenario generation + ADMM solve)
 
-| Assets | Scenarios | Time |
-|---|---|---|
-| 5 | 50K | 324 ms |
-| 10 | 50K | 493 ms |
+| Assets | Scenarios | CPU | GPU | Speedup |
+|---|---|---|---|---|
+| 5 | 50K | 245 ms | 260 ms | 0.9x |
+| 10 | 50K | 367 ms | 260 ms | **1.4x** |
+
+The full pipeline GPU path (cuRAND scenario gen + GPU ADMM) breaks even at ~10 assets and shows increasing advantage as assets grow, since scenario generation scales better on GPU.
 
 ### VRAM Usage (RTX 3060, 6 GB)
 
@@ -160,7 +165,7 @@ All dependencies (Eigen, nlohmann/json, spdlog, Google Test, Google Benchmark) a
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
-# 168 tests, all passing
+# 173 tests, all passing
 ```
 
 ### Run

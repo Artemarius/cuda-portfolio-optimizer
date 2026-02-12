@@ -13,6 +13,7 @@
 #include "optimizer/efficient_frontier.h"
 #include "optimizer/optimize_config.h"
 #include "reporting/report_writer.h"
+#include "risk/component_cvar.h"
 #include "simulation/cholesky_utils.h"
 #include "simulation/monte_carlo.h"
 #include "utils/cuda_utils.h"
@@ -252,6 +253,37 @@ int main(int argc, char* argv[]) {
 
         print_frontier(frontier);
 
+        // Compute component CVaR for the minimum-CVaR point.
+        cpo::VectorXd frontier_component_cvar;
+        if (!frontier.empty()) {
+            const auto& best = frontier.front();
+            cpo::RiskConfig risk_cfg;
+            risk_cfg.confidence_level = cfg.admm_config.confidence_level;
+
+            if (gpu_scenarios_holder.has_value()) {
+                cpo::VectorXs wf = best.weights.cast<float>();
+                auto [risk, comp] = cpo::compute_portfolio_risk_decomp_gpu(
+                    *gpu_scenarios_holder, wf, risk_cfg);
+                frontier_component_cvar = comp;
+            } else {
+                auto [risk, comp] = cpo::compute_portfolio_risk_decomp_cpu(
+                    scenarios, best.weights, risk_cfg);
+                frontier_component_cvar = comp;
+            }
+
+            spdlog::info("─── Risk Decomposition (min-CVaR point) ───");
+            double total = frontier_component_cvar.sum();
+            for (size_t i = 0; i < tickers.size(); ++i) {
+                cpo::Index idx = static_cast<cpo::Index>(i);
+                double pct = (std::abs(total) > 1e-15)
+                                 ? frontier_component_cvar(idx) / total * 100.0
+                                 : 0.0;
+                spdlog::info("  {:>8s}: weight={:.4f}  CVaR_j={:.6f}  ({:.1f}%)",
+                             tickers[i], best.weights(idx),
+                             frontier_component_cvar(idx), pct);
+            }
+        }
+
         if (!cfg.output_dir.empty()) {
             std::string csv_path = cfg.output_dir + "/frontier.csv";
             std::string json_path = cfg.output_dir + "/frontier_result.json";
@@ -269,8 +301,16 @@ int main(int argc, char* argv[]) {
                 best_result.iterations = best.iterations;
                 best_result.converged = best.converged;
                 cpo::write_optimize_result_json(
-                    best_result, mu, tickers, json_path);
+                    best_result, mu, tickers, frontier_component_cvar,
+                    json_path);
                 spdlog::info("Wrote result JSON to {}", json_path);
+
+                std::string decomp_path =
+                    cfg.output_dir + "/risk_decomposition.csv";
+                cpo::write_risk_decomposition_csv(
+                    best.weights, frontier_component_cvar, tickers,
+                    decomp_path);
+                spdlog::info("Wrote risk decomposition to {}", decomp_path);
             }
         }
     } else {
@@ -285,10 +325,47 @@ int main(int argc, char* argv[]) {
         }
         print_result(result, mu, tickers);
 
+        // Compute component CVaR.
+        cpo::VectorXd component_cvar;
+        {
+            cpo::RiskConfig risk_cfg;
+            risk_cfg.confidence_level = cfg.admm_config.confidence_level;
+
+            if (gpu_scenarios_holder.has_value()) {
+                cpo::VectorXs wf = result.weights.cast<float>();
+                auto [risk, comp] = cpo::compute_portfolio_risk_decomp_gpu(
+                    *gpu_scenarios_holder, wf, risk_cfg);
+                component_cvar = comp;
+            } else {
+                auto [risk, comp] = cpo::compute_portfolio_risk_decomp_cpu(
+                    scenarios, result.weights, risk_cfg);
+                component_cvar = comp;
+            }
+        }
+
+        spdlog::info("─── Risk Decomposition ───");
+        double total = component_cvar.sum();
+        for (size_t i = 0; i < tickers.size(); ++i) {
+            cpo::Index idx = static_cast<cpo::Index>(i);
+            double pct = (std::abs(total) > 1e-15)
+                             ? component_cvar(idx) / total * 100.0
+                             : 0.0;
+            spdlog::info("  {:>8s}: weight={:.4f}  CVaR_j={:.6f}  ({:.1f}%)",
+                         tickers[i], result.weights(idx),
+                         component_cvar(idx), pct);
+        }
+
         if (!cfg.output_dir.empty()) {
             std::string json_path = cfg.output_dir + "/optimize_result.json";
-            cpo::write_optimize_result_json(result, mu, tickers, json_path);
+            cpo::write_optimize_result_json(
+                result, mu, tickers, component_cvar, json_path);
             spdlog::info("Wrote result JSON to {}", json_path);
+
+            std::string decomp_path =
+                cfg.output_dir + "/risk_decomposition.csv";
+            cpo::write_risk_decomposition_csv(
+                result.weights, component_cvar, tickers, decomp_path);
+            spdlog::info("Wrote risk decomposition to {}", decomp_path);
         }
     }
 
