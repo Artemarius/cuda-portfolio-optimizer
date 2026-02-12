@@ -124,4 +124,201 @@ VectorXd project_simplex_box(const VectorXd& v, const VectorXd& lb,
     return x;
 }
 
+// ── L1 ball projection ──────────────────────────────────────────────
+
+VectorXd project_l1_ball(const VectorXd& v, const VectorXd& center,
+                          ScalarCPU radius) {
+    // Project onto {x : ||x - center||_1 <= radius}.
+    //
+    // Duchi et al. 2008: project the shifted absolute values onto
+    // the simplex scaled by radius, then restore signs.
+    //
+    // 1. d = v - center
+    // 2. If ||d||_1 <= radius, return v (already feasible).
+    // 3. Project |d| onto the L1 ball of radius `radius` via
+    //    soft-thresholding: find theta s.t. sum max(|d_i| - theta, 0) = radius
+    // 4. w_i = center_i + sign(d_i) * max(|d_i| - theta, 0)
+
+    const int n = static_cast<int>(v.size());
+    if (center.size() != n) {
+        throw std::runtime_error(
+            "project_l1_ball: dimension mismatch (v=" + std::to_string(n) +
+            ", center=" + std::to_string(center.size()) + ")");
+    }
+    if (radius < 0.0) {
+        throw std::runtime_error(
+            "project_l1_ball: radius must be >= 0");
+    }
+
+    VectorXd d = v - center;
+    double l1_norm = d.lpNorm<1>();
+
+    // Already inside the ball.
+    if (l1_norm <= radius + 1e-15) {
+        return v;
+    }
+
+    // Special case: radius = 0 -> project to center.
+    if (radius < 1e-15) {
+        return center;
+    }
+
+    // Sort |d| descending to find the soft-threshold parameter.
+    // Same structure as simplex projection but for L1 ball.
+    std::vector<double> abs_d(n);
+    for (int i = 0; i < n; ++i) {
+        abs_d[i] = std::abs(d(i));
+    }
+    std::sort(abs_d.begin(), abs_d.end(), std::greater<double>());
+
+    // Find theta: largest j s.t. abs_d[j] - (sum_{i=0}^{j} abs_d[i] - radius) / (j+1) > 0
+    double cumsum = 0.0;
+    int rho = 0;
+    for (int j = 0; j < n; ++j) {
+        cumsum += abs_d[j];
+        double test = abs_d[j] - (cumsum - radius) / (j + 1);
+        if (test > 0.0) {
+            rho = j + 1;
+        }
+    }
+
+    double rho_sum = 0.0;
+    for (int i = 0; i < rho; ++i) {
+        rho_sum += abs_d[i];
+    }
+    double theta = (rho_sum - radius) / rho;
+
+    // Soft-threshold with sign preservation.
+    VectorXd w(n);
+    for (int i = 0; i < n; ++i) {
+        double sign = (d(i) >= 0.0) ? 1.0 : -1.0;
+        w(i) = center(i) + sign * std::max(std::abs(d(i)) - theta, 0.0);
+    }
+    return w;
+}
+
+// ── Sector projection ───────────────────────────────────────────────
+
+VectorXd project_sector(const VectorXd& v, const std::vector<Index>& indices,
+                          ScalarCPU s_min, ScalarCPU s_max) {
+    // Project so that sum(v[i] for i in indices) lies in [s_min, s_max].
+    //
+    // If already feasible, return v unchanged.
+    // Otherwise, uniformly shift sector elements to reach the nearest bound.
+
+    if (indices.empty()) return v;
+
+    double sector_sum = 0.0;
+    for (Index idx : indices) {
+        sector_sum += v(idx);
+    }
+
+    if (sector_sum >= s_min - 1e-15 && sector_sum <= s_max + 1e-15) {
+        return v;
+    }
+
+    VectorXd w = v;
+    double target = (sector_sum < s_min) ? s_min : s_max;
+    double adjustment = (target - sector_sum) / static_cast<double>(indices.size());
+
+    for (Index idx : indices) {
+        w(idx) += adjustment;
+    }
+
+    return w;
+}
+
+// ── Generalized Dykstra's alternating projection ────────────────────
+
+VectorXd project_constraints(const VectorXd& v,
+                               const ConstraintSet& constraints,
+                               int max_iter, ScalarCPU tol) {
+    // Generalized N-set Dykstra's alternating projection algorithm.
+    //
+    // Boyle & Dykstra 1986: for N convex sets C_1, ..., C_N, maintain
+    // increment vectors p_1, ..., p_N initialized to zero.
+    //
+    // Each cycle:
+    //   for k = 1..N:
+    //     y = project_{C_k}(x + p_k)
+    //     p_k = (x + p_k) - y
+    //     x = y
+    //
+    // Converges to the projection onto the intersection.
+
+    const int n = static_cast<int>(v.size());
+
+    // Build the list of projection functions.
+    // Order: simplex -> box -> L1 ball (turnover) -> each sector.
+    const int n_sets = constraints.num_constraint_sets();
+
+    // Increment vectors (one per constraint set).
+    std::vector<VectorXd> increments(n_sets, VectorXd::Zero(n));
+
+    VectorXd x = v;
+
+    for (int iter = 0; iter < max_iter; ++iter) {
+        VectorXd x_prev = x;
+        auto increments_prev = increments;
+        int set_idx = 0;
+
+        // Set 0: Simplex projection (always active).
+        {
+            VectorXd y_input = x + increments[set_idx];
+            VectorXd y = project_simplex(y_input);
+            increments[set_idx] = y_input - y;
+            x = y;
+            ++set_idx;
+        }
+
+        // Set 1: Box projection (if active).
+        if (constraints.has_position_limits) {
+            VectorXd y_input = x + increments[set_idx];
+            VectorXd y = project_box(y_input,
+                                      constraints.position_limits.w_min,
+                                      constraints.position_limits.w_max);
+            increments[set_idx] = y_input - y;
+            x = y;
+            ++set_idx;
+        }
+
+        // Set 2: L1 ball projection for turnover (if active).
+        if (constraints.has_turnover) {
+            VectorXd y_input = x + increments[set_idx];
+            VectorXd y = project_l1_ball(y_input,
+                                          constraints.turnover.w_prev,
+                                          constraints.turnover.tau);
+            increments[set_idx] = y_input - y;
+            x = y;
+            ++set_idx;
+        }
+
+        // Sets 3+: Sector projections (one per sector bound).
+        if (constraints.has_sector_constraints) {
+            for (const auto& sector : constraints.sector_constraints.sectors) {
+                VectorXd y_input = x + increments[set_idx];
+                VectorXd y = project_sector(y_input, sector.assets,
+                                             sector.min_exposure,
+                                             sector.max_exposure);
+                increments[set_idx] = y_input - y;
+                x = y;
+                ++set_idx;
+            }
+        }
+
+        // Check convergence: both x and all increments must be stable.
+        // Checking only x can cause premature termination when x is
+        // temporarily stationary but increments are still evolving.
+        double delta = (x - x_prev).norm();
+        for (int k = 0; k < n_sets; ++k) {
+            delta += (increments[k] - increments_prev[k]).norm();
+        }
+        if (delta < tol) {
+            break;
+        }
+    }
+
+    return x;
+}
+
 }  // namespace cpo

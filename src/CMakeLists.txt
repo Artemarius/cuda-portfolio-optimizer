@@ -14,6 +14,7 @@ add_library(cuda_portfolio_lib STATIC
     optimizer/admm_solver.cpp
     optimizer/admm_kernels.cu
     optimizer/efficient_frontier.cpp
+    constraints/constraint_set.cpp
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC

@@ -284,42 +284,47 @@ This roadmap is structured for incremental development with testable deliverable
 
 ---
 
-## Phase 6 — Realistic Constraints
+## Phase 6 — Realistic Constraints ✅
 
-**Goal:** Add position limits, turnover, leverage, and sector constraints to the optimizer.
+**Status:** Complete (position limits, turnover, sector constraints, unified ConstraintSet, Dykstra's projection)
 
-### Tasks
+**Goal:** Add position limits, turnover, and sector constraints to the optimizer.
+
+### Implemented
 
 1. `src/constraints/constraint_set.h/cpp`:
-   - Unified constraint representation
-   - Parse from JSON config
-   - Feasibility check: does a given w satisfy all constraints?
-2. `src/constraints/position_limits.h/cpp`:
-   - Long-only: w ≥ 0
-   - Position bounds: w_min ≤ w ≤ w_max (e.g., max 5% per asset)
-   - These are handled by the box projection in ADMM z-update
-3. `src/constraints/turnover.h/cpp`:
-   - ||w - w_prev||₁ ≤ τ (L1 turnover constraint)
-   - Requires w_prev (previous portfolio) as input
-   - ADMM: add as indicator function, project onto L1 ball centered at w_prev
-4. `src/constraints/sector_exposure.h/cpp`:
-   - Σ_{j ∈ sector_k} w_j ≤ s_max (sector caps)
-   - Σ_{j ∈ sector_k} w_j ≥ s_min (sector floors)
-   - ADMM: additional consensus variable and projection
-5. Update ADMM solver to handle multiple constraint sets via consensus ADMM or splitting
+   - `PositionLimits`: per-asset w_min/w_max bounds
+   - `TurnoverConstraint`: L1 turnover ||w - w_prev||_1 <= tau with previous portfolio
+   - `SectorBound` / `SectorConstraints`: per-sector min/max exposure with named sectors
+   - `ConstraintSet`: unified container with `validate()`, `is_feasible()`, `num_constraint_sets()`
+   - `parse_constraints(json, n_assets)` — JSON parsing with full validation
+2. `src/optimizer/projections.h/cpp` — 3 new projection operators:
+   - `project_l1_ball(v, center, radius)` — L1 ball projection via Duchi 2008 soft-thresholding, O(n log n)
+   - `project_sector(v, indices, s_min, s_max)` — sector sum projection via uniform adjustment
+   - `project_constraints(v, constraints)` — generalized N-set Dykstra's alternating projection (Boyle & Dykstra 1986), cycles through simplex → box → L1 ball → each sector, with convergence check on both x and increment stability
+3. `src/optimizer/admm_solver.h/cpp` — migrated from separate box constraint fields to unified `ConstraintSet`:
+   - `AdmmConfig.constraints` replaces `has_box_constraints`/`w_min`/`w_max`
+   - z-update uses `project_constraints()` for all constraint types
+   - Target return correction re-projects through `project_constraints()`
 
-### Tests
+### Tests (26 constraint tests + 2 new ADMM tests = 108 total passing)
 
-- Position limits: optimizer output respects bounds
-- Turnover: when τ is very large → unconstrained solution; when τ = 0 → w = w_prev
-- Sector: known 2-sector problem, verify sector weights within bounds
-- Combined: all constraints active simultaneously
+- `tests/test_constraints.cpp`:
+  - L1 ball: already-in-ball, zero radius, basic, symmetric, negative entries, idempotent, dimension mismatch (7)
+  - Sector: within bounds, exceeds max, below min, empty sector (4)
+  - ConstraintSet: empty feasible, simplex/box/turnover/sector violations, all-feasible combined (6)
+  - Validation: dimension mismatch, infeasible bounds, num_constraint_sets counting (3)
+  - Dykstra's: simplex-only matches project_simplex, simplex+box feasible, tau=0 forces w_prev, large tau inactive, sector bounds respected, all constraints combined (6)
+- `tests/test_admm_solver.cpp`:
+  - Box constraints: migrated to ConstraintSet API (existing, updated)
+  - Turnover: 3 assets, tau=0.3, optimizer output within turnover limit
+  - Sector: 4 assets, sector {0,1} capped at 40%, sector sum within limit
 
-### Definition of Done
+### Design Decisions
 
-- All constraints parsed from JSON config
-- Optimizer respects all constraints (verified by feasibility checker)
-- Adding constraints doesn't break convergence (may increase iterations)
+- **Single header for all constraint types** — `ConstraintSet` contains all optional constraints with boolean flags. Simpler than separate files per constraint type.
+- **Generalized Dykstra's** — extends the existing 2-set simplex+box pattern to N sets. Convergence checked on both x stability and increment stability to prevent premature termination.
+- **Constraint migration** — replaced `AdmmConfig.has_box_constraints`/`w_min`/`w_max` with `AdmmConfig.constraints` (unified `ConstraintSet`). All existing tests updated and passing.
 
 ---
 

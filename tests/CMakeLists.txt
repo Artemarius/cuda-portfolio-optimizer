@@ -38,6 +38,13 @@ target_link_libraries(test_projections PRIVATE
 )
 gtest_discover_tests(test_projections)
 
+add_executable(test_constraints test_constraints.cpp)
+target_link_libraries(test_constraints PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_constraints)
+
 add_executable(test_admm_solver test_admm_solver.cpp)
 target_link_libraries(test_admm_solver PRIVATE
     cuda_portfolio_lib

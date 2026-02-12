@@ -72,45 +72,30 @@ VectorXd x_update_proximal(const MatrixXd& scenarios,
 ///
 /// The constraint set is the intersection of:
 ///   - Probability simplex: {w : 1'w = 1, w >= 0}
-///   - Box constraints: {w : w_min <= w <= w_max} (if specified)
+///   - Position limits, turnover, sector (via ConstraintSet)
 ///   - Target return: {w : mu'w >= target_return} (if specified)
 ///
-/// For the target return constraint, we use a simple gradient step
-/// to push w toward feasibility after the simplex/box projection.
+/// Uses project_constraints (generalized Dykstra's) for the combined
+/// constraint projection, then applies target return correction.
 VectorXd z_update(const VectorXd& x_plus_u,
                    const VectorXd& mu,
                    const AdmmConfig& config) {
-    VectorXd z;
-
-    if (config.has_box_constraints) {
-        z = project_simplex_box(x_plus_u, config.w_min, config.w_max);
-    } else {
-        z = project_simplex(x_plus_u);
-    }
+    VectorXd z = project_constraints(x_plus_u, config.constraints);
 
     // Enforce target return constraint via projection.
-    // If mu'z < target, shift z along mu direction while staying on simplex.
+    // If mu'z < target, shift z along mu direction and re-project.
     if (config.has_target_return) {
         double port_return = mu.dot(z);
         if (port_return < config.target_return) {
-            // Iterative correction: push along mu, re-project.
-            // This is a heuristic that works well in practice.
             for (int correction = 0; correction < 10; ++correction) {
                 double deficit = config.target_return - mu.dot(z);
                 if (deficit <= 1e-10) break;
 
-                // Step along the mu direction, scaled by the deficit.
                 double mu_norm_sq = mu.squaredNorm();
                 if (mu_norm_sq < 1e-15) break;
                 VectorXd z_shifted = z + (deficit / mu_norm_sq) * mu;
 
-                // Re-project to maintain simplex/box feasibility.
-                if (config.has_box_constraints) {
-                    z = project_simplex_box(z_shifted, config.w_min,
-                                            config.w_max);
-                } else {
-                    z = project_simplex(z_shifted);
-                }
+                z = project_constraints(z_shifted, config.constraints);
             }
         }
     }
@@ -134,13 +119,7 @@ AdmmResult admm_solve(const MatrixXd& scenarios,
             "admm_solve: mu size (" + std::to_string(mu.size()) +
             ") != n_assets (" + std::to_string(n_assets) + ")");
     }
-    if (config.has_box_constraints) {
-        if (config.w_min.size() != n_assets ||
-            config.w_max.size() != n_assets) {
-            throw std::runtime_error(
-                "admm_solve: box constraint dimensions don't match n_assets");
-        }
-    }
+    config.constraints.validate(n_assets);
 
     // Tail probability for R-U formulation.
     const double alpha = 1.0 - config.confidence_level;

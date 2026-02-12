@@ -5,6 +5,7 @@
 #include <numeric>
 #include <vector>
 
+#include "constraints/constraint_set.h"
 #include "optimizer/admm_kernels.h"
 #include "optimizer/admm_solver.h"
 #include "optimizer/efficient_frontier.h"
@@ -165,9 +166,9 @@ TEST(AdmmSolver, BoxConstraints) {
     AdmmConfig config;
     config.confidence_level = 0.95;
     config.max_iter = 300;
-    config.has_box_constraints = true;
-    config.w_min = VectorXd::Zero(3);
-    config.w_max = VectorXd::Constant(3, 0.5);
+    config.constraints.has_position_limits = true;
+    config.constraints.position_limits.w_min = VectorXd::Zero(3);
+    config.constraints.position_limits.w_max = VectorXd::Constant(3, 0.5);
 
     auto result = admm_solve(scenarios, mu, config);
 
@@ -341,4 +342,89 @@ TEST(EfficientFrontier, MonotonicRisk) {
         << "Frontier should show increasing risk with return. "
         << "First CVaR=" << frontier.front().cvar
         << " Last CVaR=" << frontier.back().cvar;
+}
+
+// ── Turnover constraint test ────────────────────────────────────────
+
+TEST(AdmmSolver, TurnoverConstraint) {
+    // 3 assets with tight turnover limit from equal-weight.
+    const int n_scenarios = 10000;
+    const int n_assets = 3;
+
+    VectorXd mu(3);
+    mu << 0.03, 0.06, 0.12;
+
+    MatrixXd cov = MatrixXd::Identity(3, 3) * 0.04;
+    cov(0, 1) = cov(1, 0) = 0.01;
+    cov(1, 2) = cov(2, 1) = 0.02;
+    auto chol = compute_cholesky(cov);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 123;
+    MatrixXd scenarios = generate_scenarios_cpu(mu, chol, mc_cfg);
+
+    VectorXd w_prev = VectorXd::Constant(3, 1.0 / 3.0);
+
+    AdmmConfig config;
+    config.confidence_level = 0.95;
+    config.max_iter = 300;
+    config.constraints.has_turnover = true;
+    config.constraints.turnover.w_prev = w_prev;
+    config.constraints.turnover.tau = 0.3;
+
+    auto result = admm_solve(scenarios, mu, config);
+
+    EXPECT_NEAR(result.weights.sum(), 1.0, 1e-3);
+    for (int i = 0; i < n_assets; ++i) {
+        EXPECT_GE(result.weights(i), -1e-4)
+            << "w(" << i << ") below 0";
+    }
+
+    double turnover = (result.weights - w_prev).lpNorm<1>();
+    EXPECT_LE(turnover, 0.3 + 1e-2)
+        << "Turnover " << turnover << " exceeds limit 0.3";
+}
+
+// ── Sector constraint test ──────────────────────────────────────────
+
+TEST(AdmmSolver, SectorConstraints) {
+    // 4 assets, sector {0,1} capped at 40%.
+    const int n_scenarios = 10000;
+    const int n_assets = 4;
+
+    VectorXd mu(4);
+    mu << 0.03, 0.06, 0.09, 0.12;
+
+    MatrixXd cov = MatrixXd::Identity(4, 4) * 0.04;
+    cov(0, 1) = cov(1, 0) = 0.01;
+    cov(2, 3) = cov(3, 2) = 0.02;
+    auto chol = compute_cholesky(cov);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 456;
+    MatrixXd scenarios = generate_scenarios_cpu(mu, chol, mc_cfg);
+
+    AdmmConfig config;
+    config.confidence_level = 0.95;
+    config.max_iter = 300;
+    config.constraints.has_sector_constraints = true;
+    SectorBound sb;
+    sb.name = "SectorA";
+    sb.assets = {0, 1};
+    sb.max_exposure = 0.4;
+    config.constraints.sector_constraints.sectors.push_back(sb);
+
+    auto result = admm_solve(scenarios, mu, config);
+
+    EXPECT_NEAR(result.weights.sum(), 1.0, 1e-3);
+    for (int i = 0; i < n_assets; ++i) {
+        EXPECT_GE(result.weights(i), -1e-4)
+            << "w(" << i << ") below 0";
+    }
+
+    double sector_sum = result.weights(0) + result.weights(1);
+    EXPECT_LE(sector_sum, 0.4 + 1e-2)
+        << "Sector sum " << sector_sum << " exceeds limit 0.4";
 }

@@ -15,6 +15,7 @@
 ///   Boyle & Dykstra, "A Method for Finding Projections onto the
 ///   Intersection of Convex Sets in Hilbert Spaces", 1986.
 
+#include "constraints/constraint_set.h"
 #include "core/types.h"
 
 namespace cpo {
@@ -58,5 +59,54 @@ VectorXd project_box(const VectorXd& v, const VectorXd& lb, const VectorXd& ub);
 VectorXd project_simplex_box(const VectorXd& v, const VectorXd& lb,
                               const VectorXd& ub, int max_iter = 100,
                               double tol = 1e-10);
+
+/// Project onto an L1 ball: {v : ||v - center||_1 <= radius}.
+///
+/// Uses the Duchi et al. 2008 approach: shift to center, project onto
+/// the scaled L1 ball via soft-thresholding with sign preservation,
+/// then shift back. O(n log n) from the sorting step.
+///
+/// @param v Input vector.
+/// @param center Center of the L1 ball.
+/// @param radius Radius of the L1 ball (must be >= 0).
+/// @return Projected vector.
+VectorXd project_l1_ball(const VectorXd& v, const VectorXd& center,
+                          ScalarCPU radius);
+
+/// Project a vector so that the sum of specified sector indices
+/// lies within [s_min, s_max].
+///
+/// If the sector sum is within bounds, returns v unchanged.
+/// Otherwise, uniformly adjusts the sector elements to reach the
+/// nearest bound while preserving relative proportions.
+///
+/// @param v Input vector (full portfolio).
+/// @param indices Asset indices belonging to the sector.
+/// @param s_min Minimum sector exposure.
+/// @param s_max Maximum sector exposure.
+/// @return Projected vector with sector sum in [s_min, s_max].
+VectorXd project_sector(const VectorXd& v, const std::vector<Index>& indices,
+                          ScalarCPU s_min, ScalarCPU s_max);
+
+/// Project onto the intersection of all active constraints in a ConstraintSet.
+///
+/// Uses generalized N-set Dykstra's alternating projection algorithm.
+/// Cycles through: simplex -> box -> L1 ball (turnover) -> each sector.
+/// Maintains one increment vector per constraint set.
+///
+/// Extends the 2-set project_simplex_box pattern to N constraint sets.
+///
+/// Reference:
+///   Boyle & Dykstra, "A Method for Finding Projections onto the
+///   Intersection of Convex Sets in Hilbert Spaces", 1986.
+///
+/// @param v Input vector.
+/// @param constraints Active constraint set.
+/// @param max_iter Maximum Dykstra iterations (default: 200).
+/// @param tol Convergence tolerance (default: 1e-10).
+/// @return Projected vector in the intersection of all constraint sets.
+VectorXd project_constraints(const VectorXd& v,
+                               const ConstraintSet& constraints,
+                               int max_iter = 200, ScalarCPU tol = 1e-10);
 
 }  // namespace cpo

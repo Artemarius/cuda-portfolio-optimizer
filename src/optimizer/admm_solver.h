@@ -7,7 +7,9 @@
 ///   min_{w}  CVaR_alpha(w)
 ///   s.t.     mu' w >= target_return
 ///            1' w = 1,  w >= 0        (simplex)
-///            w_min <= w <= w_max       (box constraints, optional)
+///            w_min <= w <= w_max       (position limits, optional)
+///            ||w - w_prev||_1 <= tau   (turnover, optional)
+///            sector bounds             (sector constraints, optional)
 ///
 /// ADMM splits this into:
 ///   x-update: minimize CVaR proxy + (rho/2)||x - z + u||^2
@@ -27,6 +29,7 @@
 #include <functional>
 #include <vector>
 
+#include "constraints/constraint_set.h"
 #include "core/types.h"
 #include "risk/risk_result.h"
 
@@ -52,10 +55,8 @@ struct AdmmConfig {
     ScalarCPU abs_tol = 1e-6;      ///< Absolute tolerance for residuals.
     ScalarCPU rel_tol = 1e-4;      ///< Relative tolerance for residuals.
 
-    // Box constraints (optional).
-    bool has_box_constraints = false;
-    VectorXd w_min;                ///< Per-asset lower bounds.
-    VectorXd w_max;                ///< Per-asset upper bounds.
+    // Portfolio constraints (position limits, turnover, sector).
+    ConstraintSet constraints;
 
     // x-update parameters.
     ScalarCPU x_update_lr = 0.01;  ///< Learning rate for proximal gradient x-update.
