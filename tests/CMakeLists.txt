@@ -51,3 +51,13 @@ target_link_libraries(test_admm_solver PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(test_admm_solver)
+
+add_executable(test_backtest test_backtest.cpp)
+target_link_libraries(test_backtest PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+target_compile_definitions(test_backtest PRIVATE
+    TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+gtest_discover_tests(test_backtest)

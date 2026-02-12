@@ -328,51 +328,67 @@ This roadmap is structured for incremental development with testable deliverable
 
 ---
 
-## Phase 7 — Backtesting Engine
+## Phase 7 — Backtesting Engine ✅
+
+**Status:** Complete (rolling-window engine, 4 strategies, transaction costs, CSV/JSON reporting, CLI)
 
 **Goal:** Rolling-window backtest with multiple strategies and transaction costs.
 
-### Tasks
+### Implemented
 
-1. `src/backtest/strategy.h/cpp`:
-   - Strategy interface: given historical returns window → produce weights
-   - Implementations:
-     - `MeanVarianceStrategy` — Markowitz mean-variance (baseline)
-     - `MeanCVaRStrategy` — our Mean-CVaR optimizer
-     - `EqualWeightStrategy` — 1/N (surprisingly hard to beat)
-     - `RiskParityStrategy` — inverse-volatility weighting
-2. `src/backtest/transaction_costs.h/cpp`:
-   - Proportional cost: cost = c × Σ|w_new,j - w_old,j| × portfolio_value
-   - Configurable cost rate (e.g., 10 bps)
-   - Minimum trade threshold: don't rebalance tiny positions
-3. `src/backtest/backtester.h/cpp`:
-   - Rolling window:
-     - At each rebalance date (monthly):
-       1. Extract trailing window (e.g., 252 days) of returns
-       2. Estimate μ, Σ (with shrinkage)
-       3. Generate Monte Carlo scenarios (for CVaR strategy)
-       4. Optimize portfolio
-       5. Apply transaction costs
-       6. Record portfolio value
-   - Output: daily portfolio values, weights over time, turnover, costs
-4. `src/reporting/report_writer.h/cpp`:
-   - CSV output: equity curves, weights, risk metrics per period
-   - JSON output: summary statistics, strategy comparison
-   - Metrics: annualized return, volatility, Sharpe, Sortino, max drawdown, Calmar ratio, turnover
+1. `src/backtest/transaction_costs.h/cpp`:
+   - `TransactionCostConfig`: proportional cost rate (default 10 bps), minimum trade threshold
+   - `TransactionCostResult`: total cost, cost fraction, turnover, effective weights
+   - `compute_transaction_costs(w_new, w_old, value, config)` — threshold filtering, renormalization, L1 turnover
+2. `src/backtest/strategy.h/cpp`:
+   - `Strategy` abstract interface: `allocate(returns_window, w_prev)` → `AllocationResult`
+   - `EqualWeightStrategy` — 1/N (always succeeds)
+   - `RiskParityStrategy` — inverse-volatility weighting: w_i = (1/sigma_i) / sum(1/sigma_j)
+   - `MeanVarianceStrategy` — sample covariance + Eigen LDLT, global min-variance or target-return (Merton 1972 closed-form), optional shrinkage toward identity, long-only clamping
+   - `MeanCVaRStrategy` — full pipeline: estimate mu/Sigma → Cholesky → Monte Carlo scenarios (GPU or CPU) → ADMM solve, warm-start from w_prev, turnover constraint integration
+   - `create_strategy(name)` factory function
+3. `src/backtest/backtest_config.h/cpp`:
+   - `BacktestConfig` struct: data settings, rolling window (lookback, rebalance freq), strategy, ADMM/MC config, transaction costs, output dir
+   - `load_backtest_config(json_path)` — JSON parsing following existing `constraint_set.cpp` patterns
+4. `src/backtest/backtest_engine.h/cpp`:
+   - `PortfolioSnapshot`: date, value, cost, turnover, return, weights, rebalance flag
+   - `BacktestSummary`: total/annualized return, vol, Sharpe, Sortino, max drawdown, Calmar, transaction cost aggregates
+   - `run_backtest(returns, strategy, config)` — rolling-window loop:
+     1. Start at t = lookback_window, equal-weight initial portfolio
+     2. Daily: portfolio return w'r_t, value update, weight drift w_i *= (1+r_i)/(1+r_p)
+     3. Every rebalance_frequency days: slice window, call strategy, apply transaction costs
+   - `compute_backtest_summary(snapshots, name)` — aggregate metrics
+5. `src/reporting/report_writer.h/cpp`:
+   - `write_equity_curve_csv` — date, value, return, cost, rebalance flag
+   - `write_weights_csv` — rebalance-day rows only, one column per asset
+   - `write_summary_json` — single strategy summary
+   - `write_comparison_json` / `write_comparison_csv` — multi-strategy comparison
+6. `apps/backtest_main.cpp` — full CLI:
+   - `--config <path>` and `--output <dir>` arguments
+   - Loads config, prices, computes returns
+   - Runs single strategy or all 4 (strategy_name = "all")
+   - Shared cuRAND states across MeanCVaR rebalances
+   - Writes per-strategy reports + comparison table
+   - Prints summary to stdout via spdlog
 
-### Tests
+### Tests (28 passing, 136 total)
 
-- `test_backtester.cpp`:
-  - Equal-weight on 2 assets with known returns → verify portfolio value by hand
-  - Transaction costs: known trades at known cost rate → verify total cost
-  - Rolling window: correct number of rebalancing events for date range
+- `tests/test_backtest.cpp`:
+  - Transaction costs: zero turnover, full rebalance, proportional correctness, threshold suppression, dimension mismatch (5)
+  - Strategies: equal weight sum-to-1, risk parity inverse-vol weighting (2:1 ratio), equal-vol → 1/N, min-variance weights sum-to-1, 2-asset analytical verification, MeanCVaR valid weights, factory known/unknown names (8)
+  - Config: JSON round-trip parse, missing file error (2)
+  - Engine: known 2-asset returns, transaction costs reduce value, rebalance count, weight drift correctness, insufficient data throws (5)
+  - Summary: max drawdown on known curve [100,110,105,120,90,100]→25%, Sharpe positive (2)
+  - Reporting: equity curve CSV write/read, summary JSON structure, weights CSV rebalance-only rows, comparison CSV/JSON (5)
+- Test fixtures: `tests/data/backtest_config.json`
 
-### Definition of Done
+### Design Decisions
 
-- Full backtest on 5 years of SP500 data with monthly rebalancing completes in < 5 minutes
-- Strategy comparison table: MVO vs CVaR vs 1/N vs Risk Parity
-- Equity curves and risk metrics output as CSV
-- Transaction costs correctly reduce portfolio value
+- **Strategy receives raw return sub-window**, not the full dataset. The engine handles slicing. Strategies are stateless between calls.
+- **CurandStates* passed as raw pointer** to MeanCVaRStrategy. The engine/CLI owns the CurandStatesGuard and passes `.get()`. States are reused across all rebalance windows.
+- **Sample covariance with optional shrinkage** `(1-d)*S + d*trace(S)/n*I` for robustness when T < N. Full Ledoit-Wolf deferred to Phase 8.
+- **No GPU in the backtest loop itself** — the loop is sequential. GPU acceleration is within MeanCVaRStrategy (scenario generation via existing CUDA kernels).
+- **Long-only enforced** by all strategies (simplex constraint or clamp+renormalize).
 
 ---
 

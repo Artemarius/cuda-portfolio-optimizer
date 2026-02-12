@@ -15,6 +15,11 @@ add_library(cuda_portfolio_lib STATIC
     optimizer/admm_kernels.cu
     optimizer/efficient_frontier.cpp
     constraints/constraint_set.cpp
+    backtest/transaction_costs.cpp
+    backtest/strategy.cpp
+    backtest/backtest_config.cpp
+    backtest/backtest_engine.cpp
+    reporting/report_writer.cpp
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC
