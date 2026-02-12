@@ -171,11 +171,19 @@ ctest --test-dir build -C Release --output-on-failure
 ### Run
 
 ```bash
+# Download real S&P 500 data (10 stocks, 2022-2024)
+pip install -r scripts/requirements.txt
+python scripts/download_data.py
+
 # Portfolio optimization (efficient frontier)
-./build/Release/optimize --config config/optimize_5asset.json --output results/optimize/
+./build/Release/optimize --config config/optimize_sp500.json --output results/optimize_sp500/
 
 # Backtest with strategy comparison
-./build/Release/backtest --config config/backtest_5asset.json --output results/backtest/
+./build/Release/backtest --config config/backtest_sp500.json --output results/backtest_sp500/
+
+# Generate plots
+python scripts/plot_frontier.py results/optimize_sp500/frontier.csv -o docs/images/frontier.png
+python scripts/plot_backtest.py results/backtest_sp500/ -o docs/images/equity_curves.png
 
 # Benchmarks
 ./build/Release/bench_monte_carlo
@@ -184,34 +192,57 @@ ctest --test-dir build -C Release --output-on-failure
 ./build/Release/bench_factor_model
 ```
 
+#### Quick start (synthetic data)
+
+No Python or internet needed -- use the synthetic data configs:
+```bash
+python scripts/generate_sample_data.py
+./build/Release/optimize --config config/optimize_5asset.json --output results/optimize/
+./build/Release/backtest --config config/backtest_5asset.json --output results/backtest/
+```
+
 ## Example: Efficient Frontier
 
 ```bash
-./build/Release/optimize --config config/optimize_5asset.json --output results/
+./build/Release/optimize --config config/optimize_sp500.json --output results/optimize_sp500/
 ```
 
-Output:
+Output (10 S&P 500 stocks: AAPL, MSFT, NVDA, GOOG, JPM, JNJ, XOM, PG, AMZN, V):
 ```
-Efficient Frontier (10 points)
-  Target Ret   Achieved Ret         CVaR  Iters  Conv
-    0.020000     0.030548     0.244036     42   yes
-    0.024444     0.030548     0.244036     17   yes
-    0.028889     0.030548     0.244036     15   yes
-    0.033333     0.033317     0.247964     80   yes
-    0.037778     0.034867     0.257314    142   yes
-    ...
+Efficient Frontier (15 points)
+    Target Ret Achieved Ret         CVaR  Iters  Conv
+     -0.000070     0.000334     0.016154    500    no
+      0.000122     0.000332     0.016151    232   yes
+      0.000507     0.000507     0.016689    498   yes
+      0.000699     0.000699     0.018242    500    no
+      0.001276     0.001275     0.027362    436   yes
+      0.001853     0.001852     0.041009     46   yes
+      0.002623     0.002620     0.069248     29   yes
+
+Risk Decomposition (min-CVaR point):
+      AAPL: weight=0.0000  CVaR_j=0.000000  (0.0%)
+      MSFT: weight=0.0511  CVaR_j=0.000852  (5.3%)
+       JNJ: weight=0.3549  CVaR_j=0.005556  (34.4%)
+       XOM: weight=0.1597  CVaR_j=0.002638  (16.3%)
+        PG: weight=0.2953  CVaR_j=0.004795  (29.7%)
 ```
 
-Results are written to `results/frontier.csv` and `results/frontier_result.json`.
+Results are written to `results/optimize_sp500/frontier.csv` and `results/optimize_sp500/frontier_result.json`.
 
 ## Example: Backtest
 
 ```bash
-# Generate synthetic price data first
-python scripts/generate_sample_data.py
-
-./build/Release/backtest --config config/backtest_5asset.json --output results/backtest/
+./build/Release/backtest --config config/backtest_sp500.json --output results/backtest_sp500/
 ```
+
+4-strategy comparison on S&P 500 data (2023-2024, monthly rebalancing):
+
+| Strategy | Total Return | Sharpe | Max Drawdown |
+|---|---|---|---|
+| EqualWeight | 101.6% | 3.10 | 8.5% |
+| MeanCVaR | 147.3% | 2.91 | 15.7% |
+| RiskParity | 67.1% | 2.61 | 7.7% |
+| MeanVariance | 30.3% | 1.44 | 8.2% |
 
 Outputs equity curves, weights, and strategy comparison (CSV + JSON) for all four strategies.
 

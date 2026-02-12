@@ -1,0 +1,23 @@
+{
+    "price_csv_path": "data/sp500_prices.csv",
+    "tickers": ["AAPL", "MSFT", "NVDA", "GOOG", "JPM", "JNJ", "XOM", "PG", "AMZN", "V"],
+    "frontier_mode": true,
+    "use_gpu": true,
+    "monte_carlo": {
+        "n_scenarios": 50000,
+        "seed": 42
+    },
+    "admm": {
+        "confidence_level": 0.95,
+        "max_iter": 500
+    },
+    "constraints": {
+        "w_max": 0.30
+    },
+    "frontier": {
+        "n_points": 15,
+        "warm_start": true
+    },
+    "output_dir": "results/optimize_sp500",
+    "verbose": false
+}

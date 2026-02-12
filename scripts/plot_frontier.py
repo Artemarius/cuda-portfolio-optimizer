@@ -30,23 +30,25 @@ def main():
     cvars = data["cvar"] * 100
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(cvars, returns, "b-o", markersize=6, linewidth=1.5)
+    ax.plot(cvars, returns, "b-o", markersize=7, linewidth=2, zorder=3)
     ax.set_xlabel("CVaR (95%) [%]", fontsize=12)
     ax.set_ylabel("Expected Return [%]", fontsize=12)
-    ax.set_title("Mean-CVaR Efficient Frontier", fontsize=14)
-    ax.grid(True, alpha=0.3)
+    ax.set_title("Mean-CVaR Efficient Frontier", fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3, linestyle="--")
 
     # Annotate endpoints.
     ax.annotate(f"Min risk\n{cvars[0]:.2f}%",
                 xy=(cvars[0], returns[0]),
-                textcoords="offset points", xytext=(15, -10), fontsize=9)
+                textcoords="offset points", xytext=(15, -10), fontsize=9,
+                arrowprops=dict(arrowstyle="->", color="grey", lw=0.8))
     ax.annotate(f"Max return\n{returns[-1]:.2f}%",
                 xy=(cvars[-1], returns[-1]),
-                textcoords="offset points", xytext=(15, -10), fontsize=9)
+                textcoords="offset points", xytext=(15, -10), fontsize=9,
+                arrowprops=dict(arrowstyle="->", color="grey", lw=0.8))
 
     plt.tight_layout()
     if args.output:
-        plt.savefig(args.output, dpi=150)
+        plt.savefig(args.output, dpi=150, bbox_inches="tight")
         print(f"Saved to {args.output}")
     else:
         plt.show()
