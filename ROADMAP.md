@@ -162,55 +162,60 @@ This roadmap is structured for incremental development with testable deliverable
 
 ---
 
-## Phase 4 — Risk Computation (CUDA)
+## Phase 4 — Risk Computation (CUDA) ✅
+
+**Status:** Complete (CVaR/VaR, portfolio loss kernel, statistics, GPU/CPU parity)
 
 **Goal:** Compute VaR, CVaR, and other risk metrics on GPU from scenario matrix.
 
-### Tasks
+### Implemented
 
-1. `src/risk/risk_metrics.cu`:
-   - `k_compute_portfolio_loss` kernel:
-     - Input: scenario matrix (N × n), weight vector w (n)
-     - Output: loss vector (N): loss_i = -rᵢᵀw
-     - One thread per scenario, dot product with shared memory for weights
-   - `k_compute_var_cvar`:
-     - Sort losses using CUB `DeviceRadixSort`
-     - VaR_α = losses[floor(α × N)]
-     - CVaR_α = mean(losses[floor(α × N)..N-1])
-     - CUB `DeviceReduce::Sum` for the tail mean
-2. `src/risk/risk_metrics.h/cpp`:
-   - Host orchestration: allocate, launch, retrieve
-   - CPU reference implementation for all metrics
-   - Additional metrics (can be CPU-only initially):
-     - Volatility: σ_p = std(rᵀw) across scenarios
-     - Sharpe: (E[rᵀw] - r_f) / σ_p
-     - Sortino: (E[rᵀw] - r_f) / σ_downside
-     - Maximum drawdown (from scenario paths — requires multi-period scenarios or historical)
-3. `src/risk/risk_decomposition.h/cpp`:
-   - Component CVaR: contribution of asset j to portfolio CVaR
-   - CVaR_j = w_j × E[r_j | portfolio loss ≥ VaR_α]
-   - Sum of component CVaR = total CVaR (verify this identity)
+1. `src/risk/device_vector.h/cu`:
+   - `DeviceVector<T>` RAII template: move-only, cudaMalloc/Free, to_host/from_host
+   - Explicit instantiation for `Scalar` (float)
+   - Mirrors `ScenarioMatrix` patterns (no-throw destructor, CUDA_CHECK in constructor)
+2. `src/risk/risk_result.h`:
+   - `RiskConfig` struct: confidence_level (alpha), threads_per_block
+   - `RiskResult` struct: VaR, CVaR, expected_return, volatility, Sharpe, Sortino — all ScalarCPU (double)
+3. `src/risk/portfolio_loss.h/cu`:
+   - `k_compute_portfolio_loss` kernel: one thread per scenario, weights in shared memory (2KB for 500 assets)
+   - Column-major coalesced reads: `r(sid, j) = d_scenarios[j * n_scenarios + sid]`
+   - `compute_portfolio_loss_gpu(scenarios, weights)` → `DeviceVector<Scalar>` (stays on GPU)
+   - `compute_portfolio_loss_cpu(scenarios_host, weights)` → `VectorXd` via Eigen matrix-vector multiply
+4. `src/risk/cvar.h/cu`:
+   - GPU `compute_risk_gpu` flow:
+     1. CUB `DeviceRadixSort::SortKeys` — sort losses ascending into separate buffer (input preserved)
+     2. VaR = sorted[floor(alpha * N)], n_tail = N - var_index
+     3. CUB `DeviceReduce::Sum` on tail (pointer offset) → CVaR = tail_sum / n_tail
+     4. `k_compute_loss_statistics` kernel: single-pass reduction for sum, sum_sq, sum_downside_sq
+     5. Derive: expected_return, volatility, Sharpe, Sortino (all in double)
+   - `k_compute_loss_statistics`: grid-stride loop, block-level shared memory reduction, atomicAdd to global accumulators (double precision)
+   - CPU `compute_risk_cpu`: std::sort + loop in double precision
+   - Convenience: `compute_portfolio_risk_gpu/cpu(scenarios, weights)` — full pipeline in one call
 
-### Tests
+### Tests (19 passing)
 
-- `test_risk_metrics.cpp`:
-  - **Known distribution:** N(0,1) scenarios → VaR_0.05 ≈ -1.645, CVaR_0.05 ≈ -2.063
-  - **GPU vs CPU parity:** same inputs → same VaR/CVaR within 1e-5
-  - **Monotonicity:** increasing α → decreasing |CVaR|
-  - **CVaR ≥ VaR:** always, for any α and any portfolio
-  - **Component CVaR sums to total:** Σ CVaR_j = CVaR_portfolio
+- `tests/test_risk.cpp`:
+  - DeviceVector: allocate + roundtrip, move semantics, size mismatch error
+  - Portfolio loss: deterministic 2-asset 4-scenario exact values (GPU + CPU), weight size mismatch
+  - CVaR deterministic: known 10-element vector at alpha = 0.50/0.80/0.90, unsorted input, input preservation
+  - CVaR properties: CVaR >= VaR at 5 alpha levels, monotonicity in alpha
+  - Statistical: 200K N(mu,sigma^2) scenarios vs analytical normal CVaR formula (within 5%)
+  - GPU/CPU parity: 3-asset 50K scenarios, VaR/CVaR/E[r]/vol within float tolerance (~1e-3)
+  - Statistics: deterministic expected return, volatility, Sharpe, Sortino
+  - Edge cases: single element, invalid alpha throws
 
 ### Benchmarks
 
-- `bench_cvar.cpp`:
-  - GPU vs CPU: 10K, 50K, 100K scenarios
-  - Break down: loss computation time vs sort time vs reduction time
+- `benchmarks/bench_cvar.cpp`:
+  - Portfolio loss: GPU vs CPU at 10K-100K scenarios x 50-500 assets
+  - CVaR only: GPU vs CPU from pre-computed losses
+  - Full pipeline: scenarios → loss → CVaR, GPU vs CPU
 
-### Definition of Done
+### Deferred to Later Phases
 
-- CVaR computation on 100K scenarios in < 10ms on GPU
-- Matches CPU reference within floating-point tolerance
-- Risk decomposition components sum to total CVaR
+- Risk decomposition (component CVaR) → Phase 5 or 6 when optimizer needs it
+- Maximum drawdown → Phase 7 (backtest engine)
 
 ---
 

@@ -6,6 +6,9 @@ add_library(cuda_portfolio_lib STATIC
     simulation/cholesky_utils.cpp
     simulation/scenario_matrix.cu
     simulation/monte_carlo.cu
+    risk/device_vector.cu
+    risk/portfolio_loss.cu
+    risk/cvar.cu
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC

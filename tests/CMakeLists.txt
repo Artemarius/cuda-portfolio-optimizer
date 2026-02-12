@@ -23,3 +23,10 @@ target_link_libraries(test_monte_carlo PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(test_monte_carlo)
+
+add_executable(test_risk test_risk.cpp)
+target_link_libraries(test_risk PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_risk)
