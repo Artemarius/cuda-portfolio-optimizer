@@ -54,6 +54,13 @@ external/
 # Private project planning (not for public)
 PROJECT.md
 
+# Generated output
+results/
+data/
+__pycache__/
+*.pyc
+tests/data/validation/
+
 # AI tooling configs (personal dev environment)
 .claude/
 .claude_*

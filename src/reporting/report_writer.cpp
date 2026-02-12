@@ -127,4 +127,73 @@ void write_comparison_csv(const std::vector<BacktestResult>& results,
     }
 }
 
+// ── Optimization reporting ─────────────────────────────────────────
+
+void write_frontier_csv(const std::vector<FrontierPoint>& frontier,
+                        const std::vector<std::string>& tickers,
+                        const std::string& path) {
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("write_frontier_csv: cannot open " + path);
+    }
+
+    ofs << std::fixed << std::setprecision(8);
+
+    // Header.
+    ofs << "target_return,achieved_return,cvar,zeta,converged,iterations";
+    for (const auto& t : tickers) {
+        ofs << "," << t;
+    }
+    ofs << "\n";
+
+    for (const auto& pt : frontier) {
+        ofs << pt.target_return << ","
+            << pt.achieved_return << ","
+            << pt.cvar << ","
+            << pt.zeta << ","
+            << (pt.converged ? 1 : 0) << ","
+            << pt.iterations;
+        for (Index i = 0; i < static_cast<Index>(pt.weights.size()); ++i) {
+            ofs << "," << pt.weights(i);
+        }
+        ofs << "\n";
+    }
+}
+
+void write_optimize_result_json(const AdmmResult& result,
+                                const VectorXd& mu,
+                                const std::vector<std::string>& tickers,
+                                const std::string& path) {
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("write_optimize_result_json: cannot open " + path);
+    }
+
+    nlohmann::json j;
+    j["converged"] = result.converged;
+    j["iterations"] = result.iterations;
+    j["cvar"] = result.cvar;
+    j["expected_return"] = result.expected_return;
+    j["zeta"] = result.zeta;
+
+    // Weights as object {ticker: weight}.
+    nlohmann::json w_obj = nlohmann::json::object();
+    for (size_t i = 0; i < tickers.size(); ++i) {
+        w_obj[tickers[i]] = result.weights(static_cast<Index>(i));
+    }
+    j["weights"] = w_obj;
+
+    // Weights as array (for easier parsing).
+    std::vector<double> w_arr(result.weights.data(),
+                               result.weights.data() + result.weights.size());
+    j["weights_array"] = w_arr;
+
+    // Input mu.
+    std::vector<double> mu_arr(mu.data(), mu.data() + mu.size());
+    j["mu"] = mu_arr;
+    j["tickers"] = tickers;
+
+    ofs << j.dump(2) << "\n";
+}
+
 }  // namespace cpo
