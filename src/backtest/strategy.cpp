@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <random>
 #include <stdexcept>
 
 #include <Eigen/Cholesky>
 #include <spdlog/spdlog.h>
 
+#include "models/factor_monte_carlo.h"
 #include "simulation/cholesky_utils.h"
 
 namespace cpo {
@@ -202,42 +204,73 @@ AllocationResult MeanCVaRStrategy::allocate(const MatrixXd& returns,
     const Index n = static_cast<Index>(returns.cols());
 
     // 1. Estimate mu and Sigma from the return window.
-    VectorXd mu = compute_sample_mean(returns);
-    MatrixXd cov = compute_sample_covariance(returns);
+    VectorXd mu;
+    MatrixXd cov;
+    std::optional<FactorModelResult> factor_result;
 
-    // 2. Cholesky decomposition: Sigma = L * L'.
-    CholeskyResult cholesky;
-    try {
-        cholesky = compute_cholesky(cov);
-    } catch (const std::runtime_error& e) {
-        spdlog::warn("MeanCVaRStrategy: Cholesky failed ({}), falling back to equal weight", e.what());
-        VectorXd w = VectorXd::Constant(n, 1.0 / static_cast<double>(n));
-        return AllocationResult{std::move(w), mu.dot(w), 0.0, false};
+    if (config_.use_factor_model) {
+        // Factor model covariance estimation.
+        try {
+            factor_result = fit_factor_model(returns, config_.factor_config);
+        } catch (const std::exception& e) {
+            spdlog::warn("MeanCVaRStrategy: factor model failed ({}), "
+                         "falling back to sample covariance", e.what());
+        }
     }
 
-    // 3. Generate scenarios.
+    if (factor_result.has_value()) {
+        mu = factor_result->mu;
+        cov = reconstruct_covariance(*factor_result);
+    } else {
+        mu = compute_sample_mean(returns);
+        cov = compute_sample_covariance(returns);
+    }
+
+    // 2. Generate scenarios.
     MonteCarloConfig mc = config_.mc_config;
     mc.n_assets = n;
 
     MatrixXd scenarios_cpu;
-    if (config_.use_gpu) {
-        ScenarioMatrix scenarios_gpu = generate_scenarios_gpu(
-            mu, cholesky, mc, config_.curand_states);
-        // Convert GPU float scenarios to CPU double for ADMM solver.
-        MatrixXs host_float = scenarios_gpu.to_host();
-        scenarios_cpu = host_float.cast<double>();
+    if (config_.use_factor_mc && factor_result.has_value()) {
+        // Factor Monte Carlo path (optimized: O(Nk) per scenario).
+        if (config_.use_gpu) {
+            ScenarioMatrix scenarios_gpu = generate_scenarios_factor_gpu(
+                mu, *factor_result, mc, config_.curand_states);
+            MatrixXs host_float = scenarios_gpu.to_host();
+            scenarios_cpu = host_float.cast<double>();
+        } else {
+            scenarios_cpu = generate_scenarios_factor_cpu(
+                mu, *factor_result, mc);
+        }
     } else {
-        scenarios_cpu = generate_scenarios_cpu(mu, cholesky, mc);
+        // Full Cholesky Monte Carlo path (default).
+        CholeskyResult cholesky;
+        try {
+            cholesky = compute_cholesky(cov);
+        } catch (const std::runtime_error& e) {
+            spdlog::warn("MeanCVaRStrategy: Cholesky failed ({}), "
+                         "falling back to equal weight", e.what());
+            VectorXd w = VectorXd::Constant(n, 1.0 / static_cast<double>(n));
+            return AllocationResult{std::move(w), mu.dot(w), 0.0, false};
+        }
+        if (config_.use_gpu) {
+            ScenarioMatrix scenarios_gpu = generate_scenarios_gpu(
+                mu, cholesky, mc, config_.curand_states);
+            MatrixXs host_float = scenarios_gpu.to_host();
+            scenarios_cpu = host_float.cast<double>();
+        } else {
+            scenarios_cpu = generate_scenarios_cpu(mu, cholesky, mc);
+        }
     }
 
-    // 4. Configure ADMM.
+    // 3. Configure ADMM.
     AdmmConfig admm = config_.admm_config;
     // Set turnover w_prev if turnover constraint is enabled.
     if (admm.constraints.has_turnover && w_prev.size() == n) {
         admm.constraints.turnover.w_prev = w_prev;
     }
 
-    // 5. Solve.
+    // 4. Solve.
     AdmmResult result = admm_solve(scenarios_cpu, mu, admm, w_prev);
 
     if (!result.converged) {

@@ -9,6 +9,7 @@
 #include "backtest/transaction_costs.h"
 #include "core/types.h"
 #include "data/market_data.h"
+#include "models/factor_model.h"
 #include "optimizer/admm_solver.h"
 #include "simulation/monte_carlo.h"
 
@@ -35,6 +36,11 @@ struct BacktestConfig {
     AdmmConfig admm_config;
     MonteCarloConfig mc_config;
     bool use_gpu = false;
+
+    // Factor model settings (used by MeanCVaR strategy).
+    bool use_factor_model = false;          ///< Use factor model for covariance estimation.
+    FactorModelConfig factor_config;        ///< Factor model parameters.
+    bool use_factor_mc = false;             ///< Use factor MC kernel (vs full Cholesky MC).
 
     // Mean-variance settings.
     ScalarCPU shrinkage_intensity = 0.0;

@@ -21,6 +21,9 @@ add_library(cuda_portfolio_lib STATIC
     backtest/backtest_config.cpp
     backtest/backtest_engine.cpp
     reporting/report_writer.cpp
+    models/factor_model.cpp
+    models/factor_monte_carlo.cu
+    models/tiled_scenario_generator.cu
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC

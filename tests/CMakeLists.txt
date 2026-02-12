@@ -71,3 +71,13 @@ target_compile_definitions(test_validation PRIVATE
     TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 gtest_discover_tests(test_validation)
+
+add_executable(test_factor_model test_factor_model.cpp)
+target_link_libraries(test_factor_model PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+target_compile_definitions(test_factor_model PRIVATE
+    TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+gtest_discover_tests(test_factor_model)

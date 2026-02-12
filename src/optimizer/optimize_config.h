@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/types.h"
+#include "models/factor_model.h"
 #include "optimizer/admm_solver.h"
 #include "optimizer/efficient_frontier.h"
 #include "simulation/monte_carlo.h"
@@ -24,6 +25,11 @@ struct OptimizeConfig {
     // Direct mu/covariance specification (used when no CSV provided).
     std::vector<double> mu_values;           ///< Expected returns vector.
     std::vector<std::vector<double>> cov_values; ///< Covariance matrix (row-major).
+
+    // Covariance estimation.
+    std::string covariance_method = "sample";  ///< "sample" or "factor".
+    FactorModelConfig factor_config;            ///< Factor model settings (used when covariance_method="factor").
+    bool use_factor_mc = false;                 ///< Use factor MC kernel (vs full Cholesky MC).
 
     // Mode.
     bool frontier_mode = false;              ///< Compute efficient frontier vs single solve.

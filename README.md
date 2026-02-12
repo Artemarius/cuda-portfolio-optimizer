@@ -50,6 +50,7 @@ This project implements the full pipeline from scratch: return estimation, corre
 src/
   core/          Fundamental types, config, portfolio result structs
   data/          Market data loader (CSV), return computation, universe definition
+  models/        Return distribution models: PCA factor model, factor Monte Carlo
   simulation/    GPU Monte Carlo scenario generator (correlated returns via Cholesky + cuRAND)
   risk/          CVaR computation (CUDA), VaR, volatility, drawdown metrics
   optimizer/     ADMM solver (C++/CUDA), projections, efficient frontier
@@ -58,7 +59,7 @@ src/
   reporting/     Efficient frontier, risk decomposition, strategy comparison (CSV/JSON)
   utils/         Timer, logging, CUDA helpers
 apps/            CLI executables (optimize, backtest)
-tests/           Google Test unit tests (137 tests)
+tests/           Google Test unit tests (164 tests)
 benchmarks/      GPU vs CPU performance comparison (Google Benchmark)
 scripts/         Python helpers: cvxpy validation, data generation, plotting
 ```
@@ -66,6 +67,8 @@ scripts/         Python helpers: cvxpy validation, data generation, plotting
 ## What's Implemented
 
 **Monte Carlo Scenario Generation (CUDA)** -- Covariance estimation from historical returns, Cholesky decomposition (CPU), correlated sample generation on GPU via cuRAND. Column-major scenario matrix layout for coalesced memory access.
+
+**Factor Model (PCA)** -- PCA-based covariance estimation: R = Bf + eps, Sigma = B*Sigma_f*B' + diag(D). Reduces estimation from N(N+1)/2 to Nk + k(k+1)/2 + N parameters. Auto-selection of k by variance explained threshold. Factor-based Monte Carlo kernel: O(Nk) per scenario vs O(N^2) for full Cholesky -- **15.6x speedup at 500 assets**.
 
 **Risk Computation (CUDA)** -- Portfolio loss computation: one CUDA thread per scenario. VaR and CVaR via GPU-accelerated sort (CUB) + reduction.
 
@@ -152,7 +155,7 @@ All dependencies (Eigen, nlohmann/json, spdlog, Google Test, Google Benchmark) a
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
-# 137 tests, all passing
+# 164 tests, all passing
 ```
 
 ### Run
@@ -168,6 +171,7 @@ ctest --test-dir build -C Release --output-on-failure
 ./build/Release/bench_monte_carlo
 ./build/Release/bench_cvar
 ./build/Release/bench_admm
+./build/Release/bench_factor_model
 ```
 
 ## Example: Efficient Frontier

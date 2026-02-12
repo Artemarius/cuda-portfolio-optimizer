@@ -39,6 +39,21 @@ OptimizeConfig load_optimize_config(const std::string& json_path) {
         cfg.cov_values = j["covariance"].get<std::vector<std::vector<double>>>();
     }
 
+    // Covariance estimation method.
+    if (j.contains("covariance_method")) {
+        cfg.covariance_method = j["covariance_method"].get<std::string>();
+    }
+    if (j.contains("factor_model")) {
+        const auto& fm = j["factor_model"];
+        if (fm.contains("n_factors"))
+            cfg.factor_config.n_factors = fm["n_factors"].get<int>();
+        if (fm.contains("min_variance_explained"))
+            cfg.factor_config.min_variance_explained = fm["min_variance_explained"].get<double>();
+    }
+    if (j.contains("use_factor_mc")) {
+        cfg.use_factor_mc = j["use_factor_mc"].get<bool>();
+    }
+
     // Mode.
     if (j.contains("frontier_mode")) {
         cfg.frontier_mode = j["frontier_mode"].get<bool>();

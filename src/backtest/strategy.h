@@ -17,6 +17,7 @@
 #include <string>
 
 #include "core/types.h"
+#include "models/factor_model.h"
 #include "optimizer/admm_solver.h"
 #include "simulation/monte_carlo.h"
 
@@ -107,6 +108,9 @@ struct MeanCVaRConfig {
     MonteCarloConfig mc_config;        ///< Monte Carlo scenario generation settings.
     bool use_gpu = false;              ///< GPU or CPU path for scenario generation.
     CurandStates* curand_states = nullptr;  ///< Shared cuRAND states (engine-owned).
+    bool use_factor_model = false;     ///< Use factor model for covariance estimation.
+    FactorModelConfig factor_config;   ///< Factor model settings.
+    bool use_factor_mc = false;        ///< Use factor MC kernel (vs full Cholesky MC).
 };
 
 /// Mean-CVaR optimization: Monte Carlo scenario generation + ADMM solver.

@@ -7,17 +7,10 @@
 #include <curand_kernel.h>
 #include <spdlog/spdlog.h>
 
+#include "simulation/curand_states.cuh"
 #include "utils/cuda_utils.h"
 
 namespace cpo {
-
-// ── Opaque cuRAND state definition ─────────────────────────────────
-// curand_kernel.h is only included here, not in the public header.
-
-struct CurandStates {
-    curandState_t* d_states = nullptr;
-    Index n_states = 0;
-};
 
 // ── cuRAND initialization kernel ───────────────────────────────────
 

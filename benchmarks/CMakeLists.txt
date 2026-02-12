@@ -15,3 +15,9 @@ target_link_libraries(bench_admm PRIVATE
     cuda_portfolio_lib
     benchmark::benchmark
 )
+
+add_executable(bench_factor_model bench_factor_model.cpp)
+target_link_libraries(bench_factor_model PRIVATE
+    cuda_portfolio_lib
+    benchmark::benchmark
+)

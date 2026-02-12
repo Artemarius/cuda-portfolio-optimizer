@@ -61,6 +61,11 @@ __pycache__/
 *.pyc
 tests/data/validation/
 
+# Test output files
+test_*.csv
+test_*.json
+nul
+
 # AI tooling configs (personal dev environment)
 .claude/
 .claude_*

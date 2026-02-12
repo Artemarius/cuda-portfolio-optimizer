@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -6,6 +7,8 @@
 
 #include "data/csv_loader.h"
 #include "data/returns.h"
+#include "models/factor_model.h"
+#include "models/factor_monte_carlo.h"
 #include "optimizer/admm_solver.h"
 #include "optimizer/efficient_frontier.h"
 #include "optimizer/optimize_config.h"
@@ -102,6 +105,9 @@ int main(int argc, char* argv[]) {
     cpo::MatrixXd cov;
     std::vector<std::string> tickers;
 
+    // Optionally holds the fitted factor model (used by factor MC path).
+    std::optional<cpo::FactorModelResult> factor_model;
+
     if (!cfg.price_csv_path.empty()) {
         // Load from CSV.
         spdlog::info("Loading prices from {}", cfg.price_csv_path);
@@ -120,13 +126,31 @@ int main(int argc, char* argv[]) {
         cpo::ReturnData returns = cpo::compute_returns(prices, cpo::ReturnType::kSimple);
         spdlog::info("Return matrix: {} periods x {} assets",
                      returns.num_periods(), returns.num_assets());
-
-        // Estimate mu and covariance from returns.
-        mu = returns.returns.colwise().mean().transpose();
-        cpo::MatrixXd centered = returns.returns.rowwise() - mu.transpose();
-        cov = (centered.transpose() * centered) /
-              static_cast<double>(returns.num_periods() - 1);
         tickers = returns.tickers;
+
+        if (cfg.covariance_method == "factor") {
+            // Factor model covariance estimation.
+            spdlog::info("Fitting factor model (k={})...",
+                         cfg.factor_config.n_factors);
+            try {
+                factor_model = cpo::fit_factor_model(
+                    returns.returns, cfg.factor_config);
+            } catch (const std::exception& e) {
+                spdlog::error("Factor model failed: {}", e.what());
+                return 1;
+            }
+            mu = factor_model->mu;
+            cov = cpo::reconstruct_covariance(*factor_model);
+            spdlog::info("Factor model: k={}, variance explained={:.1f}%",
+                         factor_model->n_factors,
+                         factor_model->variance_explained * 100.0);
+        } else {
+            // Sample covariance estimation (default).
+            mu = returns.returns.colwise().mean().transpose();
+            cpo::MatrixXd centered = returns.returns.rowwise() - mu.transpose();
+            cov = (centered.transpose() * centered) /
+                  static_cast<double>(returns.num_periods() - 1);
+        }
     } else if (!cfg.mu_values.empty() && !cfg.cov_values.empty()) {
         // Use directly specified mu/covariance.
         int n = static_cast<int>(cfg.mu_values.size());
@@ -150,29 +174,44 @@ int main(int argc, char* argv[]) {
     spdlog::info("Optimizing {} assets, {} scenarios",
                  n_assets, cfg.mc_config.n_scenarios);
 
-    // Cholesky decomposition.
-    cpo::CholeskyResult chol;
-    try {
-        chol = cpo::compute_cholesky(cov);
-    } catch (const std::exception& e) {
-        spdlog::error("Cholesky failed: {}", e.what());
-        return 1;
-    }
-
     // Generate scenarios.
     cpo::MatrixXd scenarios;
-    if (cfg.use_gpu) {
-        spdlog::info("Generating scenarios on GPU...");
-        auto curand_states = cpo::create_curand_states(
-            cfg.mc_config.n_scenarios, cfg.mc_config.seed);
-        auto gpu_scenarios = cpo::generate_scenarios_gpu(
-            mu, chol, cfg.mc_config, curand_states.get());
-        // Download to CPU for ADMM solver.
-        cpo::MatrixXs float_scen = gpu_scenarios.to_host();
-        scenarios = float_scen.cast<double>();
+    if (cfg.use_factor_mc && factor_model.has_value()) {
+        // Factor Monte Carlo path (optimized: O(Nk) vs O(N^2) per scenario).
+        if (cfg.use_gpu) {
+            spdlog::info("Generating factor MC scenarios on GPU...");
+            auto curand_states = cpo::create_curand_states(
+                cfg.mc_config.n_scenarios, cfg.mc_config.seed);
+            auto gpu_scenarios = cpo::generate_scenarios_factor_gpu(
+                mu, *factor_model, cfg.mc_config, curand_states.get());
+            cpo::MatrixXs float_scen = gpu_scenarios.to_host();
+            scenarios = float_scen.cast<double>();
+        } else {
+            spdlog::info("Generating factor MC scenarios on CPU...");
+            scenarios = cpo::generate_scenarios_factor_cpu(
+                mu, *factor_model, cfg.mc_config);
+        }
     } else {
-        spdlog::info("Generating scenarios on CPU...");
-        scenarios = cpo::generate_scenarios_cpu(mu, chol, cfg.mc_config);
+        // Full Cholesky Monte Carlo path (default).
+        cpo::CholeskyResult chol;
+        try {
+            chol = cpo::compute_cholesky(cov);
+        } catch (const std::exception& e) {
+            spdlog::error("Cholesky failed: {}", e.what());
+            return 1;
+        }
+        if (cfg.use_gpu) {
+            spdlog::info("Generating scenarios on GPU...");
+            auto curand_states = cpo::create_curand_states(
+                cfg.mc_config.n_scenarios, cfg.mc_config.seed);
+            auto gpu_scenarios = cpo::generate_scenarios_gpu(
+                mu, chol, cfg.mc_config, curand_states.get());
+            cpo::MatrixXs float_scen = gpu_scenarios.to_host();
+            scenarios = float_scen.cast<double>();
+        } else {
+            spdlog::info("Generating scenarios on CPU...");
+            scenarios = cpo::generate_scenarios_cpu(mu, chol, cfg.mc_config);
+        }
     }
     spdlog::info("Scenario matrix: {} x {}", scenarios.rows(), scenarios.cols());
 

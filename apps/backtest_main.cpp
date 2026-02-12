@@ -132,6 +132,9 @@ int main(int argc, char* argv[]) {
             mcfg.mc_config = cfg.mc_config;
             mcfg.use_gpu = cfg.use_gpu;
             mcfg.curand_states = curand_guard.get();
+            mcfg.use_factor_model = cfg.use_factor_model;
+            mcfg.factor_config = cfg.factor_config;
+            mcfg.use_factor_mc = cfg.use_factor_mc;
             strategy = std::make_unique<cpo::MeanCVaRStrategy>(mcfg);
         } else if (sname == "MeanVariance") {
             cpo::MeanVarianceConfig mvcfg;

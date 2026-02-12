@@ -86,6 +86,19 @@ BacktestConfig load_backtest_config(const std::string& json_path) {
             cfg.mc_config.seed = mc["seed"].get<uint64_t>();
     }
 
+    // Factor model settings.
+    if (j.contains("factor_model")) {
+        cfg.use_factor_model = true;
+        const auto& fm = j["factor_model"];
+        if (fm.contains("n_factors"))
+            cfg.factor_config.n_factors = fm["n_factors"].get<int>();
+        if (fm.contains("min_variance_explained"))
+            cfg.factor_config.min_variance_explained = fm["min_variance_explained"].get<double>();
+    }
+    if (j.contains("use_factor_mc")) {
+        cfg.use_factor_mc = j["use_factor_mc"].get<bool>();
+    }
+
     // Mean-variance settings.
     if (j.contains("mean_variance")) {
         const auto& mv = j["mean_variance"];

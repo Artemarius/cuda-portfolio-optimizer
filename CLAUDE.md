@@ -6,7 +6,7 @@
 src/
   core/          — Fundamental types, config, portfolio result structs
   data/          — Market data loader (CSV), return computation, universe definition
-  models/        — Return distribution models: historical, factor model, parametric
+  models/        — Return distribution models: PCA factor model, factor Monte Carlo, tiled generation
   simulation/    — GPU Monte Carlo scenario generator (correlated returns via Cholesky + cuRAND)
   risk/          — CVaR computation (CUDA), VaR, volatility, drawdown metrics
   optimizer/     — Convex optimizer: ADMM solver (C++/CUDA), projections, efficient frontier
@@ -95,13 +95,14 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 
 # Portfolio optimization
-./build/Release/optimize --config config/sp500_cvar.json --output results/
+./build/Release/optimize --config config/optimize_5asset.json --output results/
 
 # Backtest
-./build/Release/backtest --config config/backtest_rolling.json --output results/backtest/
+./build/Release/backtest --config config/backtest_5asset.json --output results/backtest/
 
 # GPU vs CPU benchmarks
 ./build/Release/bench_monte_carlo
+./build/Release/bench_factor_model
 ```
 
 ## Dependencies
@@ -141,7 +142,7 @@ Peak usage for the largest target configuration (100K scenarios × 500 assets):
 | **Total** | **~406 MB** |
 | **Available** | **6144 MB** |
 
-No VRAM pressure. If scaling beyond 500 assets or 500K scenarios, implement tiled generation.
+No VRAM pressure. For scaling beyond 500 assets or 500K scenarios, tiled generation is implemented in `src/models/tiled_scenario_generator.h`.
 
 ## GPU Memory Patterns
 
