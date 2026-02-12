@@ -6,6 +6,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "optimizer/admm_kernels.h"
 #include "optimizer/objective.h"
 #include "optimizer/projections.h"
 
@@ -261,6 +262,225 @@ AdmmResult admm_solve(const MatrixXd& scenarios,
     }
 
     spdlog::info("ADMM result: CVaR={:.6f} E[r]={:.6f} zeta={:.6f} "
+                 "iters={} converged={}",
+                 result.cvar, result.expected_return, result.zeta,
+                 result.iterations, result.converged);
+
+    return result;
+}
+
+// ── GPU ADMM solver ─────────────────────────────────────────────────
+
+namespace {
+
+/// GPU-accelerated proximal gradient x-update.
+///
+/// Same structure as the CPU x_update_proximal, but evaluates the R-U
+/// objective on GPU via pre-allocated buffers.
+///
+/// The weight vector is cast float→double→float each inner step since the
+/// GPU kernel operates in float while ADMM state is double.
+VectorXd x_update_proximal_gpu(const ScenarioMatrix& scenarios_gpu,
+                                const VectorXd& z_minus_u,
+                                const VectorXd& x_prev,
+                                ScalarCPU zeta_prev,
+                                ScalarCPU alpha,
+                                ScalarCPU rho,
+                                ScalarCPU lr,
+                                int n_steps,
+                                ScalarCPU& zeta_out,
+                                GpuAdmmBuffers* buffers) {
+    VectorXd x = x_prev;
+    double zeta = zeta_prev;
+    const int n = static_cast<int>(x.size());
+    const int n_scenarios = scenarios_gpu.n_scenarios();
+    const double inv_n_alpha = 1.0 / (n_scenarios * alpha);
+
+    for (int step = 0; step < n_steps; ++step) {
+        // Cast weights to float for GPU kernel.
+        VectorXs w_f = x.cast<float>();
+
+        // Evaluate on GPU (raw kernel outputs, not yet scaled by 1/(N*alpha)).
+        auto gpu_res = evaluate_objective_gpu(
+            scenarios_gpu, w_f, static_cast<float>(zeta), buffers);
+
+        // Assemble gradient: dF/dw = grad_w / (N * alpha)
+        VectorXd grad_w = inv_n_alpha * gpu_res.grad_w;
+
+        // Gradient of augmented Lagrangian w.r.t. x:
+        //   grad = dF/dw + rho * (x - z_minus_u)
+        VectorXd grad_x = grad_w + rho * (x - z_minus_u);
+
+        // Gradient w.r.t. zeta: dF/dzeta = 1 - count / (N * alpha)
+        double grad_zeta = 1.0 - gpu_res.count_exceeding * inv_n_alpha;
+
+        // Gradient step.
+        x -= lr * grad_x;
+        zeta -= lr * grad_zeta;
+    }
+
+    zeta_out = zeta;
+    return x;
+}
+
+/// Evaluate the R-U objective value on GPU (scalar only, for convergence logging).
+ScalarCPU evaluate_objective_value_gpu(const ScenarioMatrix& scenarios_gpu,
+                                        const VectorXd& w,
+                                        ScalarCPU zeta,
+                                        ScalarCPU alpha,
+                                        GpuAdmmBuffers* buffers) {
+    VectorXs w_f = w.cast<float>();
+    auto gpu_res = evaluate_objective_gpu(
+        scenarios_gpu, w_f, static_cast<float>(zeta), buffers);
+    double inv_n_alpha = 1.0 / (scenarios_gpu.n_scenarios() * alpha);
+    return zeta + inv_n_alpha * gpu_res.value;
+}
+
+}  // anonymous namespace
+
+AdmmResult admm_solve(const ScenarioMatrix& scenarios_gpu,
+                       const VectorXd& mu,
+                       const AdmmConfig& config,
+                       const VectorXd& w_init) {
+    const int n_scenarios = scenarios_gpu.n_scenarios();
+    const int n_assets = scenarios_gpu.n_assets();
+
+    if (mu.size() != n_assets) {
+        throw std::runtime_error(
+            "admm_solve(GPU): mu size (" + std::to_string(mu.size()) +
+            ") != n_assets (" + std::to_string(n_assets) + ")");
+    }
+    config.constraints.validate(n_assets);
+
+    const double alpha = 1.0 - config.confidence_level;
+
+    spdlog::info("ADMM solver (GPU): {} scenarios x {} assets, alpha={:.4f}, "
+                 "rho={:.4f}, max_iter={}",
+                 n_scenarios, n_assets, alpha, config.rho, config.max_iter);
+
+    // Pre-allocate GPU buffers once (reused for ~6000 kernel calls).
+    auto gpu_buffers = create_gpu_admm_buffers(n_assets);
+
+    // Download scenarios to CPU once for cold-path operations
+    // (find_optimal_zeta, final refinement).
+    MatrixXs float_scen = scenarios_gpu.to_host();
+    MatrixXd scenarios_cpu = float_scen.cast<double>();
+
+    // ── Initialize variables ────────────────────────────────────────
+    VectorXd x(n_assets);
+    if (w_init.size() == n_assets) {
+        x = w_init;
+    } else {
+        x = VectorXd::Constant(n_assets, 1.0 / n_assets);
+    }
+
+    VectorXd z = x;
+    VectorXd u = VectorXd::Zero(n_assets);
+    VectorXd z_prev = z;
+
+    double zeta = find_optimal_zeta(scenarios_cpu, z, alpha);
+    double rho = config.rho;
+
+    AdmmResult result;
+    result.history.reserve(config.max_iter);
+
+    // ── ADMM iteration loop ─────────────────────────────────────────
+    for (int iter = 0; iter < config.max_iter; ++iter) {
+        z_prev = z;
+
+        // ── x-update: GPU-accelerated proximal gradient ─────────────
+        VectorXd z_minus_u = z - u;
+        x = x_update_proximal_gpu(scenarios_gpu, z_minus_u, x, zeta, alpha,
+                                   rho, config.x_update_lr,
+                                   config.x_update_steps, zeta,
+                                   gpu_buffers.get());
+
+        // ── z-update: project (x + u) onto constraint set (CPU) ─────
+        z = z_update(x + u, mu, config);
+
+        // ── u-update: dual variable (CPU) ───────────────────────────
+        u = u + x - z;
+
+        // ── Convergence check ───────────────────────────────────────
+        VectorXd r = x - z;
+        VectorXd s = rho * (z - z_prev);
+
+        double primal_res = r.norm();
+        double dual_res = s.norm();
+
+        double sqrt_n = std::sqrt(static_cast<double>(n_assets));
+        double eps_pri = sqrt_n * config.abs_tol +
+                         config.rel_tol * std::max(x.norm(), z.norm());
+        double eps_dual = sqrt_n * config.abs_tol +
+                          config.rel_tol * (rho * u).norm();
+
+        // Evaluate objective at current z via GPU.
+        double obj_value = evaluate_objective_value_gpu(
+            scenarios_gpu, z, zeta, alpha, gpu_buffers.get());
+
+        AdmmIterInfo info;
+        info.iteration = iter;
+        info.primal_residual = primal_res;
+        info.dual_residual = dual_res;
+        info.eps_pri = eps_pri;
+        info.eps_dual = eps_dual;
+        info.rho = rho;
+        info.objective = obj_value;
+        result.history.push_back(info);
+
+        if (config.verbose) {
+            spdlog::info("  iter {:3d}: r_pri={:.2e} r_dual={:.2e} "
+                         "eps_pri={:.2e} eps_dual={:.2e} rho={:.4f} "
+                         "obj={:.6f}",
+                         iter, primal_res, dual_res, eps_pri, eps_dual,
+                         rho, obj_value);
+        }
+
+        if (primal_res <= eps_pri && dual_res <= eps_dual) {
+            spdlog::info("ADMM (GPU) converged at iteration {} "
+                         "(r_pri={:.2e}, r_dual={:.2e})",
+                         iter, primal_res, dual_res);
+            result.converged = true;
+            result.iterations = iter + 1;
+            break;
+        }
+
+        // ── Adaptive rho update ─────────────────────────────────────
+        if (config.adaptive_rho) {
+            if (primal_res > config.mu_adapt * dual_res) {
+                rho *= config.tau_incr;
+                u /= config.tau_incr;
+            } else if (dual_res > config.mu_adapt * primal_res) {
+                rho /= config.tau_decr;
+                u *= config.tau_decr;
+            }
+            rho = std::clamp(rho, config.rho_min, config.rho_max);
+        }
+
+        if (iter == config.max_iter - 1) {
+            spdlog::warn("ADMM (GPU) did not converge within {} iterations "
+                         "(r_pri={:.2e}, r_dual={:.2e})",
+                         config.max_iter, primal_res, dual_res);
+            result.iterations = config.max_iter;
+        }
+    }
+
+    // ── Final result (CPU double-precision refinement) ──────────────
+    result.weights = z;
+    result.expected_return = mu.dot(z);
+    result.zeta = zeta;
+
+    auto final_obj = evaluate_objective_cpu(scenarios_cpu, z, zeta, alpha);
+    result.cvar = final_obj.value;
+
+    double zeta_opt = find_optimal_zeta(scenarios_cpu, z, alpha);
+    auto refined_obj = evaluate_objective_cpu(scenarios_cpu, z, zeta_opt, alpha);
+    if (refined_obj.value < result.cvar) {
+        result.cvar = refined_obj.value;
+        result.zeta = zeta_opt;
+    }
+
+    spdlog::info("ADMM (GPU) result: CVaR={:.6f} E[r]={:.6f} zeta={:.6f} "
                  "iters={} converged={}",
                  result.cvar, result.expected_return, result.zeta,
                  result.iterations, result.converged);

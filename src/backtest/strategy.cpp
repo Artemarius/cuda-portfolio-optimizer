@@ -230,48 +230,56 @@ AllocationResult MeanCVaRStrategy::allocate(const MatrixXd& returns,
     MonteCarloConfig mc = config_.mc_config;
     mc.n_assets = n;
 
-    MatrixXd scenarios_cpu;
-    if (config_.use_factor_mc && factor_result.has_value()) {
-        // Factor Monte Carlo path (optimized: O(Nk) per scenario).
-        if (config_.use_gpu) {
-            ScenarioMatrix scenarios_gpu = generate_scenarios_factor_gpu(
-                mu, *factor_result, mc, config_.curand_states);
-            MatrixXs host_float = scenarios_gpu.to_host();
-            scenarios_cpu = host_float.cast<double>();
-        } else {
-            scenarios_cpu = generate_scenarios_factor_cpu(
-                mu, *factor_result, mc);
-        }
-    } else {
-        // Full Cholesky Monte Carlo path (default).
-        CholeskyResult cholesky;
-        try {
-            cholesky = compute_cholesky(cov);
-        } catch (const std::runtime_error& e) {
-            spdlog::warn("MeanCVaRStrategy: Cholesky failed ({}), "
-                         "falling back to equal weight", e.what());
-            VectorXd w = VectorXd::Constant(n, 1.0 / static_cast<double>(n));
-            return AllocationResult{std::move(w), mu.dot(w), 0.0, false};
-        }
-        if (config_.use_gpu) {
-            ScenarioMatrix scenarios_gpu = generate_scenarios_gpu(
-                mu, cholesky, mc, config_.curand_states);
-            MatrixXs host_float = scenarios_gpu.to_host();
-            scenarios_cpu = host_float.cast<double>();
-        } else {
-            scenarios_cpu = generate_scenarios_cpu(mu, cholesky, mc);
-        }
-    }
-
     // 3. Configure ADMM.
     AdmmConfig admm = config_.admm_config;
-    // Set turnover w_prev if turnover constraint is enabled.
     if (admm.constraints.has_turnover && w_prev.size() == n) {
         admm.constraints.turnover.w_prev = w_prev;
     }
 
-    // 4. Solve.
-    AdmmResult result = admm_solve(scenarios_cpu, mu, admm, w_prev);
+    // 4. Generate scenarios and solve.
+    //    GPU path: keep ScenarioMatrix alive and use GPU admm_solve.
+    //    CPU path: generate MatrixXd and use CPU admm_solve.
+    AdmmResult result;
+    if (config_.use_gpu) {
+        // GPU path: generate scenarios on GPU, solve with GPU ADMM.
+        std::optional<ScenarioMatrix> scenarios_gpu;
+        if (config_.use_factor_mc && factor_result.has_value()) {
+            scenarios_gpu.emplace(generate_scenarios_factor_gpu(
+                mu, *factor_result, mc, config_.curand_states));
+        } else {
+            CholeskyResult cholesky;
+            try {
+                cholesky = compute_cholesky(cov);
+            } catch (const std::runtime_error& e) {
+                spdlog::warn("MeanCVaRStrategy: Cholesky failed ({}), "
+                             "falling back to equal weight", e.what());
+                VectorXd w = VectorXd::Constant(n, 1.0 / static_cast<double>(n));
+                return AllocationResult{std::move(w), mu.dot(w), 0.0, false};
+            }
+            scenarios_gpu.emplace(generate_scenarios_gpu(
+                mu, cholesky, mc, config_.curand_states));
+        }
+        result = admm_solve(*scenarios_gpu, mu, admm, w_prev);
+    } else {
+        // CPU path: generate scenarios on CPU, solve with CPU ADMM.
+        MatrixXd scenarios_cpu;
+        if (config_.use_factor_mc && factor_result.has_value()) {
+            scenarios_cpu = generate_scenarios_factor_cpu(
+                mu, *factor_result, mc);
+        } else {
+            CholeskyResult cholesky;
+            try {
+                cholesky = compute_cholesky(cov);
+            } catch (const std::runtime_error& e) {
+                spdlog::warn("MeanCVaRStrategy: Cholesky failed ({}), "
+                             "falling back to equal weight", e.what());
+                VectorXd w = VectorXd::Constant(n, 1.0 / static_cast<double>(n));
+                return AllocationResult{std::move(w), mu.dot(w), 0.0, false};
+            }
+            scenarios_cpu = generate_scenarios_cpu(mu, cholesky, mc);
+        }
+        result = admm_solve(scenarios_cpu, mu, admm, w_prev);
+    }
 
     if (!result.converged) {
         spdlog::warn("MeanCVaRStrategy: ADMM did not converge after {} iterations",

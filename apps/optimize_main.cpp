@@ -175,6 +175,8 @@ int main(int argc, char* argv[]) {
                  n_assets, cfg.mc_config.n_scenarios);
 
     // Generate scenarios.
+    // When use_gpu: keep ScenarioMatrix alive for GPU ADMM path.
+    std::optional<cpo::ScenarioMatrix> gpu_scenarios_holder;
     cpo::MatrixXd scenarios;
     if (cfg.use_factor_mc && factor_model.has_value()) {
         // Factor Monte Carlo path (optimized: O(Nk) vs O(N^2) per scenario).
@@ -182,10 +184,8 @@ int main(int argc, char* argv[]) {
             spdlog::info("Generating factor MC scenarios on GPU...");
             auto curand_states = cpo::create_curand_states(
                 cfg.mc_config.n_scenarios, cfg.mc_config.seed);
-            auto gpu_scenarios = cpo::generate_scenarios_factor_gpu(
-                mu, *factor_model, cfg.mc_config, curand_states.get());
-            cpo::MatrixXs float_scen = gpu_scenarios.to_host();
-            scenarios = float_scen.cast<double>();
+            gpu_scenarios_holder.emplace(cpo::generate_scenarios_factor_gpu(
+                mu, *factor_model, cfg.mc_config, curand_states.get()));
         } else {
             spdlog::info("Generating factor MC scenarios on CPU...");
             scenarios = cpo::generate_scenarios_factor_cpu(
@@ -204,16 +204,23 @@ int main(int argc, char* argv[]) {
             spdlog::info("Generating scenarios on GPU...");
             auto curand_states = cpo::create_curand_states(
                 cfg.mc_config.n_scenarios, cfg.mc_config.seed);
-            auto gpu_scenarios = cpo::generate_scenarios_gpu(
-                mu, chol, cfg.mc_config, curand_states.get());
-            cpo::MatrixXs float_scen = gpu_scenarios.to_host();
-            scenarios = float_scen.cast<double>();
+            gpu_scenarios_holder.emplace(cpo::generate_scenarios_gpu(
+                mu, chol, cfg.mc_config, curand_states.get()));
         } else {
             spdlog::info("Generating scenarios on CPU...");
             scenarios = cpo::generate_scenarios_cpu(mu, chol, cfg.mc_config);
         }
     }
-    spdlog::info("Scenario matrix: {} x {}", scenarios.rows(), scenarios.cols());
+
+    // For CPU path, log scenario matrix size.
+    // For GPU path, download only if needed (CPU solver falls back).
+    if (gpu_scenarios_holder.has_value()) {
+        spdlog::info("Scenario matrix (GPU): {} x {}",
+                     gpu_scenarios_holder->n_scenarios(),
+                     gpu_scenarios_holder->n_assets());
+    } else {
+        spdlog::info("Scenario matrix: {} x {}", scenarios.rows(), scenarios.cols());
+    }
 
     // Apply box constraints from config (deferred until we know n_assets from CSV).
     if (cfg.admm_config.constraints.has_position_limits &&
@@ -233,8 +240,15 @@ int main(int argc, char* argv[]) {
                      cfg.frontier_config.n_points);
 
         cfg.frontier_config.admm_config = cfg.admm_config;
-        auto frontier = cpo::compute_efficient_frontier(
-            scenarios, mu, cfg.frontier_config);
+
+        std::vector<cpo::FrontierPoint> frontier;
+        if (gpu_scenarios_holder.has_value()) {
+            frontier = cpo::compute_efficient_frontier(
+                *gpu_scenarios_holder, mu, cfg.frontier_config);
+        } else {
+            frontier = cpo::compute_efficient_frontier(
+                scenarios, mu, cfg.frontier_config);
+        }
 
         print_frontier(frontier);
 
@@ -263,7 +277,12 @@ int main(int argc, char* argv[]) {
         // ── Single-point optimization ─────────────────────────────
         spdlog::info("Running ADMM optimization...");
 
-        auto result = cpo::admm_solve(scenarios, mu, cfg.admm_config);
+        cpo::AdmmResult result;
+        if (gpu_scenarios_holder.has_value()) {
+            result = cpo::admm_solve(*gpu_scenarios_holder, mu, cfg.admm_config);
+        } else {
+            result = cpo::admm_solve(scenarios, mu, cfg.admm_config);
+        }
         print_result(result, mu, tickers);
 
         if (!cfg.output_dir.empty()) {

@@ -66,6 +66,9 @@ test_*.csv
 test_*.json
 nul
 
+# Documentation images (tracked)
+!docs/images/
+
 # AI tooling configs (personal dev environment)
 .claude/
 .claude_*

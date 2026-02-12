@@ -42,7 +42,8 @@ Library and executables are separate — `apps/` links against `cuda_portfolio_l
 - **Eigen3** for CPU-side linear algebra (covariance matrices, Cholesky decomposition)
 - **cuRAND** for GPU random number generation
 - **CUB** for GPU sort and reduction primitives (ships with CUDA 12.8)
-- **ADMM solver** implemented in C++/CUDA for the constrained Mean-CVaR optimization
+- **ADMM solver** implemented in C++/CUDA for the constrained Mean-CVaR optimization. GPU x-update via `k_evaluate_ru_objective` kernel with pre-allocated device buffers (`GpuAdmmBuffers`), CPU z-update/u-update (cheap projections), double-precision final refinement
+- **Opaque GPU buffer pattern**: `GpuAdmmBuffers` (like `CurandStates`) — struct defined in `.cuh`, forward-declared in `.h`, factory/deleter/guard in public API. Avoids per-call cudaMalloc/cudaFree (~6000 calls per ADMM solve)
 - **Dual precision strategy:** `float` for GPU scenario matrix and risk computation (throughput + VRAM), `double` for optimizer convergence checks and CPU-side estimation
 
 ## Code Style & Conventions
@@ -123,8 +124,8 @@ All resolved via FetchContent except CUDA toolkit components. `git clone` + `cma
 
 1. **Mathematical correctness** — optimization must produce provably correct efficient frontiers. Validate against known analytical solutions (2-asset closed-form) and against cvxpy/scipy
 2. **Formula traceability** — every formula in code references the source paper and equation number
-3. **Correctness before performance** — get ADMM logic correct on CPU first, then move bottleneck (x-update) to CUDA
-4. **GPU/CPU parity** — implement both CPU and GPU paths for all compute-heavy operations. Benchmark and document speedups (target: 50–100× for Monte Carlo, 10–50× for optimization)
+3. **Correctness before performance** — ADMM logic proven correct on CPU, then x-update bottleneck moved to CUDA (done: `admm_solve(ScenarioMatrix&, ...)` GPU overload)
+4. **GPU/CPU parity** — both CPU and GPU paths exist for all compute-heavy operations (Monte Carlo, ADMM x-update, CVaR). Benchmark and document speedups
 5. **Component independence** — optimizer, simulator, and backtester are independently usable via the static library
 6. **Realistic constraints** — position limits, turnover, transaction costs. Not a toy optimizer
 
@@ -149,6 +150,7 @@ No VRAM pressure. For scaling beyond 500 assets or 500K scenarios, tiled generat
 - **Scenario matrix:** column-major layout (N_scenarios × N_assets). When computing portfolio loss (dot product of weights × one scenario row), all threads in a warp access the same column → coalesced reads.
 - **cuRAND state:** initialize once, store in device memory, reuse across optimizer iterations. Initialization is expensive (~2ms for 100K states).
 - **Weight vector:** small enough (500 × 4 = 2KB) to fit in shared memory for the loss computation kernel.
+- **ADMM buffers (`GpuAdmmBuffers`):** pre-allocated once per `admm_solve` call — `d_weights` (float), `d_sum_excess` (double), `d_grad_w` (double × N_assets), `d_count` (int). Zeroed via `cudaMemset` + weights uploaded via `cudaMemcpy` each inner step. Eliminates ~6000 cudaMalloc/cudaFree pairs per solve.
 
 ## Key Mathematical References
 

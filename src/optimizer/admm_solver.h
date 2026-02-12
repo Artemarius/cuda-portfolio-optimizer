@@ -32,6 +32,7 @@
 #include "constraints/constraint_set.h"
 #include "core/types.h"
 #include "risk/risk_result.h"
+#include "simulation/scenario_matrix.h"
 
 namespace cpo {
 
@@ -100,6 +101,24 @@ struct AdmmResult {
 /// @param w_init Initial weights (optional; defaults to 1/n).
 /// @return AdmmResult with optimal weights and diagnostics.
 AdmmResult admm_solve(const MatrixXd& scenarios,
+                       const VectorXd& mu,
+                       const AdmmConfig& config,
+                       const VectorXd& w_init = VectorXd());
+
+/// Solve Mean-CVaR optimization using ADMM with GPU-accelerated x-update.
+///
+/// The x-update inner loop runs on GPU using pre-allocated device buffers,
+/// while z-update and u-update (cheap projections) remain on CPU.
+///
+/// Scenarios are downloaded to CPU once for cold-path operations
+/// (find_optimal_zeta, final refinement).
+///
+/// @param scenarios_gpu GPU-resident scenario matrix (float, column-major).
+/// @param mu Expected return vector (n_assets, double).
+/// @param config ADMM configuration.
+/// @param w_init Initial weights (optional; defaults to 1/n).
+/// @return AdmmResult with optimal weights and diagnostics.
+AdmmResult admm_solve(const ScenarioMatrix& scenarios_gpu,
                        const VectorXd& mu,
                        const AdmmConfig& config,
                        const VectorXd& w_init = VectorXd());

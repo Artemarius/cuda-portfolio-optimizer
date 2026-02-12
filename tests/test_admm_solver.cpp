@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <optional>
 #include <vector>
 
 #include "constraints/constraint_set.h"
@@ -427,4 +428,189 @@ TEST(AdmmSolver, SectorConstraints) {
     double sector_sum = result.weights(0) + result.weights(1);
     EXPECT_LE(sector_sum, 0.4 + 1e-2)
         << "Sector sum " << sector_sum << " exceeds limit 0.4";
+}
+
+// ── GPU ADMM solver parity tests ────────────────────────────────────
+
+TEST(GpuAdmmSolver, MatchesCPU_TwoAsset) {
+    // Verify GPU ADMM produces weights close to CPU ADMM.
+    const int n_scenarios = 10000;
+    const int n_assets = 2;
+
+    VectorXd mu(2);
+    mu << 0.05, 0.10;
+
+    MatrixXd cov(2, 2);
+    cov << 0.04, 0.01,
+           0.01, 0.09;
+    auto chol = compute_cholesky(cov);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 42;
+    MatrixXd cpu_scenarios = generate_scenarios_cpu(mu, chol, mc_cfg);
+
+    // Upload to GPU.
+    ScenarioMatrix gpu_scenarios(n_scenarios, n_assets);
+    MatrixXs float_scenarios = cpu_scenarios.cast<float>();
+    gpu_scenarios.from_host(float_scenarios);
+
+    AdmmConfig config;
+    config.confidence_level = 0.95;
+    config.max_iter = 300;
+
+    // CPU solve.
+    auto cpu_result = admm_solve(cpu_scenarios, mu, config);
+    // GPU solve.
+    auto gpu_result = admm_solve(gpu_scenarios, mu, config);
+
+    // Weights should be close (float vs double precision differences).
+    EXPECT_NEAR(gpu_result.weights.sum(), 1.0, 1e-3);
+    for (int i = 0; i < n_assets; ++i) {
+        EXPECT_NEAR(gpu_result.weights(i), cpu_result.weights(i), 0.05)
+            << "w(" << i << ") GPU=" << gpu_result.weights(i)
+            << " CPU=" << cpu_result.weights(i);
+    }
+
+    // CVaR should be close.
+    EXPECT_NEAR(gpu_result.cvar, cpu_result.cvar, 0.02)
+        << "GPU CVaR=" << gpu_result.cvar
+        << " CPU CVaR=" << cpu_result.cvar;
+
+    // Both should converge.
+    EXPECT_TRUE(gpu_result.converged);
+}
+
+TEST(GpuAdmmSolver, MatchesCPU_BoxConstraints) {
+    // Verify GPU ADMM respects box constraints.
+    const int n_scenarios = 10000;
+    const int n_assets = 3;
+
+    VectorXd mu(3);
+    mu << 0.03, 0.06, 0.12;
+
+    MatrixXd cov = MatrixXd::Identity(3, 3);
+    cov *= 0.04;
+    cov(0, 1) = cov(1, 0) = 0.01;
+    cov(1, 2) = cov(2, 1) = 0.02;
+    auto chol = compute_cholesky(cov);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 123;
+    MatrixXd cpu_scenarios = generate_scenarios_cpu(mu, chol, mc_cfg);
+
+    ScenarioMatrix gpu_scenarios(n_scenarios, n_assets);
+    MatrixXs float_scenarios = cpu_scenarios.cast<float>();
+    gpu_scenarios.from_host(float_scenarios);
+
+    AdmmConfig config;
+    config.confidence_level = 0.95;
+    config.max_iter = 300;
+    config.constraints.has_position_limits = true;
+    config.constraints.position_limits.w_min = VectorXd::Zero(3);
+    config.constraints.position_limits.w_max = VectorXd::Constant(3, 0.5);
+
+    auto cpu_result = admm_solve(cpu_scenarios, mu, config);
+    auto gpu_result = admm_solve(gpu_scenarios, mu, config);
+
+    EXPECT_NEAR(gpu_result.weights.sum(), 1.0, 1e-3);
+    for (int i = 0; i < n_assets; ++i) {
+        EXPECT_GE(gpu_result.weights(i), -1e-4)
+            << "GPU w(" << i << ") below lower bound";
+        EXPECT_LE(gpu_result.weights(i), 0.5 + 1e-3)
+            << "GPU w(" << i << ") above upper bound";
+        EXPECT_NEAR(gpu_result.weights(i), cpu_result.weights(i), 0.05)
+            << "w(" << i << ") GPU=" << gpu_result.weights(i)
+            << " CPU=" << cpu_result.weights(i);
+    }
+}
+
+TEST(GpuEfficientFrontier, MatchesCPU) {
+    // Verify GPU frontier matches CPU frontier.
+    const int n_scenarios = 10000;
+    const int n_assets = 2;
+
+    VectorXd mu(2);
+    mu << 0.03, 0.10;
+
+    MatrixXd cov(2, 2);
+    cov << 0.04, 0.01,
+           0.01, 0.09;
+    auto chol = compute_cholesky(cov);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 42;
+    MatrixXd cpu_scenarios = generate_scenarios_cpu(mu, chol, mc_cfg);
+
+    ScenarioMatrix gpu_scenarios(n_scenarios, n_assets);
+    MatrixXs float_scenarios = cpu_scenarios.cast<float>();
+    gpu_scenarios.from_host(float_scenarios);
+
+    FrontierConfig f_cfg;
+    f_cfg.n_points = 5;
+    f_cfg.admm_config.confidence_level = 0.95;
+    f_cfg.admm_config.max_iter = 200;
+
+    auto cpu_frontier = compute_efficient_frontier(cpu_scenarios, mu, f_cfg);
+    auto gpu_frontier = compute_efficient_frontier(gpu_scenarios, mu, f_cfg);
+
+    ASSERT_EQ(cpu_frontier.size(), gpu_frontier.size());
+
+    for (size_t i = 0; i < cpu_frontier.size(); ++i) {
+        EXPECT_NEAR(gpu_frontier[i].cvar, cpu_frontier[i].cvar, 0.02)
+            << "Frontier point " << i << " CVaR mismatch";
+        EXPECT_NEAR(gpu_frontier[i].achieved_return,
+                    cpu_frontier[i].achieved_return, 0.02)
+            << "Frontier point " << i << " return mismatch";
+        EXPECT_NEAR(gpu_frontier[i].weights.sum(), 1.0, 1e-3)
+            << "Frontier point " << i << " weights don't sum to 1";
+    }
+
+    // Frontier should still show increasing risk with return.
+    EXPECT_GT(gpu_frontier.back().cvar, gpu_frontier.front().cvar);
+}
+
+// ── GPU buffer management test ──────────────────────────────────────
+
+TEST(GpuAdmmBuffers, BufferedMatchesUnbuffered) {
+    // Verify buffered evaluate_objective_gpu matches the allocating version.
+    const int n_scenarios = 5000;
+    const int n_assets = 3;
+
+    VectorXd mu(3);
+    mu << 0.03, 0.06, 0.09;
+
+    MatrixXd cov = MatrixXd::Identity(3, 3) * 0.04;
+    cov(0, 1) = cov(1, 0) = 0.01;
+    auto chol = compute_cholesky(cov);
+
+    MonteCarloConfig mc_cfg;
+    mc_cfg.n_scenarios = n_scenarios;
+    mc_cfg.seed = 42;
+    MatrixXd cpu_scenarios = generate_scenarios_cpu(mu, chol, mc_cfg);
+
+    ScenarioMatrix gpu_scenarios(n_scenarios, n_assets);
+    MatrixXs float_scenarios = cpu_scenarios.cast<float>();
+    gpu_scenarios.from_host(float_scenarios);
+
+    VectorXs w(3);
+    w << 0.3f, 0.4f, 0.3f;
+    float zeta = 0.1f;
+
+    // Unbuffered (allocates per call).
+    auto unbuf_result = evaluate_objective_gpu(gpu_scenarios, w, zeta);
+
+    // Buffered (pre-allocated).
+    auto buffers = create_gpu_admm_buffers(n_assets);
+    auto buf_result = evaluate_objective_gpu(gpu_scenarios, w, zeta,
+                                             buffers.get());
+
+    EXPECT_NEAR(buf_result.value, unbuf_result.value, 1e-10);
+    EXPECT_EQ(buf_result.count_exceeding, unbuf_result.count_exceeding);
+    for (int j = 0; j < n_assets; ++j) {
+        EXPECT_NEAR(buf_result.grad_w(j), unbuf_result.grad_w(j), 1e-10)
+            << "grad_w[" << j << "] mismatch";
+    }
 }

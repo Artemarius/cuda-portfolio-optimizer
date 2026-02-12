@@ -1,4 +1,5 @@
 #include "optimizer/admm_kernels.h"
+#include "optimizer/admm_buffers.cuh"
 
 #include <algorithm>
 #include <cmath>
@@ -142,6 +143,98 @@ GpuObjectiveResult evaluate_objective_gpu(const ScenarioMatrix& scenarios,
     CUDA_CHECK(cudaFree(d_sum_excess));
     CUDA_CHECK(cudaFree(d_grad_w));
     CUDA_CHECK(cudaFree(d_count));
+
+    // Assemble result.
+    GpuObjectiveResult result;
+    result.value = h_sum_excess;
+    result.grad_w = Eigen::Map<VectorXd>(h_grad_w.data(), n_assets);
+    result.count_exceeding = h_count;
+
+    return result;
+}
+
+// ── Pre-allocated buffer management ─────────────────────────────────
+
+GpuAdmmBuffersGuard create_gpu_admm_buffers(int n_assets) {
+    auto* buf = new GpuAdmmBuffers();
+    buf->n_assets = n_assets;
+
+    size_t w_bytes = static_cast<size_t>(n_assets) * sizeof(float);
+    size_t grad_bytes = static_cast<size_t>(n_assets) * sizeof(double);
+
+    CUDA_CHECK(cudaMalloc(&buf->d_weights, w_bytes));
+    CUDA_CHECK(cudaMalloc(&buf->d_sum_excess, sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&buf->d_grad_w, grad_bytes));
+    CUDA_CHECK(cudaMalloc(&buf->d_count, sizeof(int)));
+
+    return GpuAdmmBuffersGuard(buf);
+}
+
+void destroy_gpu_admm_buffers(GpuAdmmBuffers* buffers) {
+    if (!buffers) return;
+    // No-throw: ignore errors during cleanup (same pattern as ScenarioMatrix).
+    if (buffers->d_weights) cudaFree(buffers->d_weights);
+    if (buffers->d_sum_excess) cudaFree(buffers->d_sum_excess);
+    if (buffers->d_grad_w) cudaFree(buffers->d_grad_w);
+    if (buffers->d_count) cudaFree(buffers->d_count);
+    delete buffers;
+}
+
+// ── Buffered host wrapper (no malloc/free per call) ─────────────────
+
+GpuObjectiveResult evaluate_objective_gpu(const ScenarioMatrix& scenarios,
+                                           const VectorXs& w,
+                                           Scalar zeta,
+                                           GpuAdmmBuffers* buffers,
+                                           int threads_per_block) {
+    const int n_scenarios = scenarios.n_scenarios();
+    const int n_assets = scenarios.n_assets();
+
+    if (w.size() != n_assets) {
+        throw std::runtime_error(
+            "evaluate_objective_gpu: w size (" +
+            std::to_string(w.size()) + ") != n_assets (" +
+            std::to_string(n_assets) + ")");
+    }
+    if (buffers->n_assets != n_assets) {
+        throw std::runtime_error(
+            "evaluate_objective_gpu: buffer n_assets (" +
+            std::to_string(buffers->n_assets) + ") != n_assets (" +
+            std::to_string(n_assets) + ")");
+    }
+
+    size_t w_bytes = static_cast<size_t>(n_assets) * sizeof(float);
+    size_t grad_bytes = static_cast<size_t>(n_assets) * sizeof(double);
+
+    // Zero accumulators and upload weights (reusing pre-allocated memory).
+    CUDA_CHECK(cudaMemset(buffers->d_sum_excess, 0, sizeof(double)));
+    CUDA_CHECK(cudaMemset(buffers->d_grad_w, 0, grad_bytes));
+    CUDA_CHECK(cudaMemset(buffers->d_count, 0, sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(buffers->d_weights, w.data(), w_bytes,
+                          cudaMemcpyHostToDevice));
+
+    // Launch kernel.
+    int blocks = (n_scenarios + threads_per_block - 1) / threads_per_block;
+    size_t smem = static_cast<size_t>(n_assets) * sizeof(float);
+
+    k_evaluate_ru_objective<<<blocks, threads_per_block, smem>>>(
+        scenarios.device_ptr(), buffers->d_weights,
+        n_scenarios, n_assets, zeta,
+        buffers->d_sum_excess, buffers->d_grad_w, buffers->d_count);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Copy results to host.
+    double h_sum_excess = 0.0;
+    int h_count = 0;
+    std::vector<double> h_grad_w(n_assets, 0.0);
+
+    CUDA_CHECK(cudaMemcpy(&h_sum_excess, buffers->d_sum_excess, sizeof(double),
+                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_grad_w.data(), buffers->d_grad_w, grad_bytes,
+                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&h_count, buffers->d_count, sizeof(int),
+                          cudaMemcpyDeviceToHost));
 
     // Assemble result.
     GpuObjectiveResult result;

@@ -20,6 +20,7 @@
 
 #include "core/types.h"
 #include "optimizer/admm_solver.h"
+#include "simulation/scenario_matrix.h"
 
 namespace cpo {
 
@@ -61,6 +62,20 @@ struct FrontierConfig {
 /// @return Vector of FrontierPoint, one per target return.
 std::vector<FrontierPoint> compute_efficient_frontier(
     const MatrixXd& scenarios,
+    const VectorXd& mu,
+    const FrontierConfig& config);
+
+/// Compute the Mean-CVaR efficient frontier with GPU-accelerated ADMM.
+///
+/// Same algorithm as the CPU version, but calls the GPU admm_solve overload
+/// for each target return point.
+///
+/// @param scenarios_gpu GPU-resident scenario matrix (float, column-major).
+/// @param mu Expected return vector (n_assets, double).
+/// @param config Frontier configuration.
+/// @return Vector of FrontierPoint, one per target return.
+std::vector<FrontierPoint> compute_efficient_frontier(
+    const ScenarioMatrix& scenarios_gpu,
     const VectorXd& mu,
     const FrontierConfig& config);
 

@@ -2,6 +2,11 @@
 
 GPU-accelerated portfolio optimization using Monte Carlo simulation and Mean-CVaR, with a custom ADMM solver implemented in C++17/CUDA and a rolling-window backtesting engine.
 
+<p align="center">
+  <img src="docs/images/frontier.png" alt="Mean-CVaR Efficient Frontier" width="48%">
+  <img src="docs/images/equity_curves.png" alt="Backtest Equity Curves" width="48%">
+</p>
+
 ## Motivation
 
 Classical portfolio optimization (Markowitz mean-variance) has well-known limitations: sensitivity to estimation error, Gaussian return assumptions, and variance as a poor proxy for tail risk. CVaR (Conditional Value-at-Risk) addresses the tail risk problem, but the scenario-based formulation is computationally expensive -- you're solving over tens of thousands of Monte Carlo scenarios. This maps naturally to GPU parallelism: scenario generation is embarrassingly parallel, and the ADMM solver's per-iteration bottleneck is a matrix-vector product across all scenarios.
@@ -59,7 +64,7 @@ src/
   reporting/     Efficient frontier, risk decomposition, strategy comparison (CSV/JSON)
   utils/         Timer, logging, CUDA helpers
 apps/            CLI executables (optimize, backtest)
-tests/           Google Test unit tests (164 tests)
+tests/           Google Test unit tests (168 tests)
 benchmarks/      GPU vs CPU performance comparison (Google Benchmark)
 scripts/         Python helpers: cvxpy validation, data generation, plotting
 ```
@@ -72,7 +77,7 @@ scripts/         Python helpers: cvxpy validation, data generation, plotting
 
 **Risk Computation (CUDA)** -- Portfolio loss computation: one CUDA thread per scenario. VaR and CVaR via GPU-accelerated sort (CUB) + reduction.
 
-**ADMM Optimizer (C++/CUDA)** -- Rockafellar-Uryasev formulation of Mean-CVaR. ADMM with proximal gradient x-update (GPU-accelerated), Dykstra's alternating projection for constraint handling. Supports position limits, turnover, and sector exposure bounds.
+**ADMM Optimizer (C++/CUDA)** -- Rockafellar-Uryasev formulation of Mean-CVaR. ADMM with proximal gradient x-update evaluated on GPU via pre-allocated device buffers (~6000 kernel calls per solve, zero malloc/free overhead). CPU z-update/u-update (cheap projections). Dykstra's alternating projection for constraint handling. Supports position limits, turnover, and sector exposure bounds.
 
 **Efficient Frontier** -- Target-return sweep with warm-starting between solves.
 
@@ -155,7 +160,7 @@ All dependencies (Eigen, nlohmann/json, spdlog, Google Test, Google Benchmark) a
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
-# 164 tests, all passing
+# 168 tests, all passing
 ```
 
 ### Run
