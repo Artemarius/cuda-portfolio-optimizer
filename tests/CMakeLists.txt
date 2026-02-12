@@ -30,3 +30,17 @@ target_link_libraries(test_risk PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(test_risk)
+
+add_executable(test_projections test_projections.cpp)
+target_link_libraries(test_projections PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_projections)
+
+add_executable(test_admm_solver test_admm_solver.cpp)
+target_link_libraries(test_admm_solver PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_admm_solver)
