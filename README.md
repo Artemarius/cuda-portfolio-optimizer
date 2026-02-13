@@ -3,8 +3,8 @@
 GPU-accelerated portfolio optimization using Monte Carlo simulation and Mean-CVaR, with a custom ADMM solver implemented in C++17/CUDA and a rolling-window backtesting engine.
 
 <p align="center">
-  <img src="docs/images/frontier.png" alt="Mean-CVaR Efficient Frontier" width="48%">
-  <img src="docs/images/equity_curves.png" alt="Backtest Equity Curves" width="48%">
+  <img src="docs/images/frontier_50.png" alt="Mean-CVaR Efficient Frontier (48 stocks)" width="48%">
+  <img src="docs/images/equity_curves_50.png" alt="Backtest Equity Curves (48 stocks)" width="48%">
 </p>
 
 ## Motivation
