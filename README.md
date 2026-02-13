@@ -190,6 +190,9 @@ python scripts/download_data.py --universe 50    # 48 stocks across 11 GICS sect
 # 50-stock optimization (GPU, factor model, 100K scenarios, 10% position limits)
 ./build/Release/optimize --config config/optimize_sp500_50.json --output results/optimize_sp500_50/
 
+# 50-stock optimization with Ledoit-Wolf shrinkage (sample covariance path)
+./build/Release/optimize --config config/optimize_sp500_50_lw.json --output results/optimize_sp500_50_lw/
+
 # Backtest with strategy comparison
 ./build/Release/backtest --config config/backtest_sp500.json --output results/backtest_sp500/
 ./build/Release/backtest --config config/backtest_sp500_50.json --output results/backtest_sp500_50/
@@ -245,6 +248,39 @@ Risk Decomposition (min-CVaR point):
 The optimizer diversifies across defensive sectors (consumer staples, utilities, health care) at the 10% position cap, with component CVaR correctly summing to total.
 
 Results are written to `results/optimize_sp500_50/frontier.csv` and `results/optimize_sp500_50/frontier_result.json`.
+
+## Example: Ledoit-Wolf Shrinkage (50 Stocks)
+
+```bash
+./build/Release/optimize --config config/optimize_sp500_50_lw.json
+```
+
+Same 48 stocks, but using Ledoit-Wolf optimal shrinkage on the sample covariance instead of the factor model:
+
+```
+Ledoit-Wolf shrinkage intensity: 0.0183
+  (T=751, N=48 — sample cov well-estimated, light shrinkage)
+
+Efficient Frontier (15 points)
+    Target Ret Achieved Ret         CVaR  Iters  Conv
+     -0.000760     0.000435     0.015271    500    no
+     -0.000518     0.000432     0.015269    264   yes
+      0.000448     0.000448     0.015273    109   yes
+      0.001173     0.001145     0.021604    378   yes
+      0.001656     0.001259     0.026040     74   yes
+      0.002623     0.001261     0.026614    117   yes
+
+Risk Decomposition (min-CVaR point):
+       JNJ: weight=0.1000  CVaR_j=0.001304  (8.5%)
+       MCD: weight=0.1000  CVaR_j=0.001478  (9.7%)
+        PG: weight=0.1000  CVaR_j=0.001506  (9.9%)
+        KO: weight=0.1000  CVaR_j=0.001503  (9.8%)
+       PEP: weight=0.0836  CVaR_j=0.001306  (8.6%)
+       DUK: weight=0.0636  CVaR_j=0.000990  (6.5%)
+       ... (48 stocks, 23 with non-zero weight)
+```
+
+With T/N = 15.6, the LW estimator applies only 1.8% shrinkage -- the sample covariance is already well-estimated. The resulting frontier closely matches the factor model frontier, with the same defensive-sector tilt at the minimum-CVaR point. Enable with `"use_ledoit_wolf": true` in any config JSON (set `"covariance_method": "sample"`).
 
 ## Example: Backtest
 
