@@ -603,6 +603,78 @@ This roadmap is structured for incremental development with testable deliverable
 
 ---
 
+## Phase 11 — 50-Stock Demo & GPU Crossover Analysis ✅
+
+**Status:** Complete
+
+**Goal:** Scale demo to 50 stocks where GPU advantage is demonstrable, benchmark at multiple asset counts to find the crossover point, fix a constraint parsing bug.
+
+### Implemented
+
+1. **Bug fix — `w_max` constraint for CSV-based configs**:
+   - `optimize_config.cpp` only constructed position limit vectors when `mu_values` was non-empty (direct specification). CSV-based configs silently dropped `w_max`.
+   - Fix: added `w_max_scalar` field to `OptimizeConfig`, store scalar unconditionally during parsing, construct vectors in `optimize_main.cpp` after `n_assets` is known from CSV.
+
+2. **Extended ADMM benchmarks** (`benchmarks/bench_admm.cpp`):
+   - Added 25/50/75/100-asset configs to all 6 benchmark functions (CPU + GPU single solve, frontier, full pipeline).
+   - Parameterized `n_scenarios` in frontier benchmarks (50K for 25+ assets).
+
+3. **50-stock data pipeline** (`scripts/download_data.py`):
+   - Added `TICKERS_50`: 48 S&P 500 stocks across all 11 GICS sectors.
+   - Added `argparse` with `--universe {10,50}` flag (default: 10 for backward compat).
+   - Graceful handling of missing tickers with warnings.
+
+4. **50-stock config files**:
+   - `config/optimize_sp500_50.json`: factor model (k=10), factor MC, 100K scenarios, 10% position limits, GPU, 15-point frontier.
+   - `config/backtest_sp500_50.json`: 50K scenarios, factor model, 0.5 shrinkage, all 4 strategies.
+
+5. **Documentation updates**:
+   - README: crossover benchmark tables, 50-stock demo instructions, updated examples.
+   - ROADMAP: Phase 11 with benchmark results.
+
+### GPU Crossover Analysis (RTX 3060, 50K scenarios)
+
+**ADMM Solve:**
+
+| Assets | CPU | GPU | Speedup |
+|---|---|---|---|
+| 2 | 214 ms | 297 ms | 0.72x |
+| 5 | 208 ms | 320 ms | 0.65x |
+| 10 | 312 ms | 422 ms | 0.74x |
+| 25 | 1,141 ms | 734 ms | **1.55x** |
+| 50 | 4,109 ms | 844 ms | **4.87x** |
+| 75 | 13,219 ms | 1,266 ms | **10.4x** |
+| 100 | 24,406 ms | 2,750 ms | **8.9x** |
+
+**Crossover point: ~20 assets.** Below that, per-iteration kernel launch + host-device sync overhead exceeds compute savings. Above 25, GPU parallel scenario evaluation dominates. CPU time scales roughly O(N^2) per iteration (scenario matrix dot product), while GPU scales sub-linearly thanks to thread-level parallelism.
+
+**Full Pipeline (scenario generation + ADMM):**
+
+| Assets | CPU | GPU | Speedup |
+|---|---|---|---|
+| 5 | 234 ms | 271 ms | 0.86x |
+| 10 | 320 ms | 289 ms | **1.11x** |
+| 25 | 1,156 ms | 531 ms | **2.18x** |
+| 50 | 4,188 ms | 1,016 ms | **4.12x** |
+| 100 | 27,531 ms | 1,375 ms | **20.0x** |
+
+### 50-Stock Demo Results
+
+- Efficient frontier: 15 points computed in ~43 seconds (GPU), 12/15 converged within 500 iterations.
+- Position limits (10% max) properly enforced — verified in output weights.
+- Min-CVaR portfolio diversifies across defensive sectors: consumer staples, utilities, health care.
+- Backtest: MeanCVaR achieves Sharpe 2.24, outperforming all baselines on 48 stocks.
+
+### Definition of Done
+
+- `w_max` constraint works for CSV-based configs (verified in 50-stock output) ✅
+- Benchmarks run with 25/50/75/100-asset configs ✅
+- GPU crossover point documented (~20 assets) ✅
+- 50-stock optimization and backtest produce valid results ✅
+- 173 tests still pass ✅
+
+---
+
 ## Appendix: VRAM Budget (RTX 3060 6GB)
 
 | Component | Size (100K × 500) | Size (100K × 100) |

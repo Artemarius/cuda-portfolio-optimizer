@@ -172,6 +172,16 @@ int main(int argc, char* argv[]) {
     }
 
     int n_assets = static_cast<int>(mu.size());
+
+    // Construct position limit vectors from deferred scalar (fixes CSV-based configs).
+    if (cfg.w_max_scalar > 0.0) {
+        cfg.admm_config.constraints.has_position_limits = true;
+        cfg.admm_config.constraints.position_limits.w_min =
+            cpo::VectorXd::Zero(n_assets);
+        cfg.admm_config.constraints.position_limits.w_max =
+            cpo::VectorXd::Constant(n_assets, cfg.w_max_scalar);
+    }
+
     spdlog::info("Optimizing {} assets, {} scenarios",
                  n_assets, cfg.mc_config.n_scenarios);
 
@@ -221,13 +231,6 @@ int main(int argc, char* argv[]) {
                      gpu_scenarios_holder->n_assets());
     } else {
         spdlog::info("Scenario matrix: {} x {}", scenarios.rows(), scenarios.cols());
-    }
-
-    // Apply box constraints from config (deferred until we know n_assets from CSV).
-    if (cfg.admm_config.constraints.has_position_limits &&
-        cfg.admm_config.constraints.position_limits.w_max.size() == 0) {
-        // This shouldn't happen with proper config, but handle gracefully.
-        cfg.admm_config.constraints.has_position_limits = false;
     }
 
     // Create output directory.

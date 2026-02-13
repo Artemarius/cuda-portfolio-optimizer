@@ -96,35 +96,41 @@ scripts/         Python helpers: cvxpy validation, data generation, plotting
 
 GPU advantage grows with problem size. At 50K x 100, GPU is 12.5x faster. The 10K x 50 case is too small to offset kernel launch overhead.
 
-### ADMM Optimization (converged)
+### ADMM Optimization (50K scenarios)
 
-| Assets | Scenarios | CPU | GPU | Iters |
-|---|---|---|---|---|
-| 2 | 10K | 46 ms | 312 ms | 65 |
-| 2 | 50K | 207 ms | 286 ms | 54 |
-| 5 | 10K | 43 ms | 229 ms | 46 |
-| 5 | 50K | 214 ms | 245 ms | 42 |
-| 10 | 10K | 51 ms | 219 ms | 40 |
-| 10 | 50K | 297 ms | 359 ms | 44 |
-
-At these problem sizes the GPU x-update overhead (kernel launch, host-device sync per ADMM iteration) exceeds the compute savings. The GPU path pays off at higher asset/scenario counts where the per-iteration matrix-vector product dominates.
-
-### Efficient Frontier (5 points, 20K scenarios)
-
-| Assets | CPU | GPU | Total Iterations |
+| Assets | CPU | GPU | Speedup |
 |---|---|---|---|
-| 3 | 359 ms | 1,250 ms | ~200 |
-| 5 | 562 ms | 2,266 ms | ~310 |
-| 10 | 1,031 ms | 3,094 ms | ~375 |
+| 2 | 214 ms | 297 ms | 0.72x |
+| 5 | 208 ms | 320 ms | 0.65x |
+| 10 | 312 ms | 422 ms | 0.74x |
+| 25 | 1,141 ms | 734 ms | **1.55x** |
+| 50 | 4,109 ms | 844 ms | **4.87x** |
+| 75 | 13,219 ms | 1,266 ms | **10.4x** |
+| 100 | 24,406 ms | 2,750 ms | **8.9x** |
+
+**GPU crossover at ~20 assets.** Below that, kernel launch and host-device sync overhead per ADMM iteration exceeds the compute savings. Above 25 assets, the GPU's parallel scenario evaluation dominates and the speedup grows rapidly -- 10x at 75 assets.
+
+### Efficient Frontier (5 points)
+
+| Assets | Scenarios | CPU | GPU | Speedup |
+|---|---|---|---|---|
+| 3 | 20K | 352 ms | 1,062 ms | 0.33x |
+| 5 | 20K | 578 ms | 1,703 ms | 0.34x |
+| 10 | 20K | 953 ms | 2,609 ms | 0.37x |
+| 25 | 50K | 7,076 ms | 3,375 ms | **2.10x** |
+| 50 | 50K | 21,249 ms | 3,812 ms | **5.57x** |
 
 ### Full Pipeline (scenario generation + ADMM solve)
 
 | Assets | Scenarios | CPU | GPU | Speedup |
 |---|---|---|---|---|
-| 5 | 50K | 245 ms | 260 ms | 0.9x |
-| 10 | 50K | 367 ms | 260 ms | **1.4x** |
+| 5 | 50K | 234 ms | 271 ms | 0.86x |
+| 10 | 50K | 320 ms | 289 ms | **1.11x** |
+| 25 | 50K | 1,156 ms | 531 ms | **2.18x** |
+| 50 | 50K | 4,188 ms | 1,016 ms | **4.12x** |
+| 100 | 50K | 27,531 ms | 1,375 ms | **20.0x** |
 
-The full pipeline GPU path (cuRAND scenario gen + GPU ADMM) breaks even at ~10 assets and shows increasing advantage as assets grow, since scenario generation scales better on GPU.
+The full pipeline (cuRAND scenario generation + GPU ADMM) breaks even at ~10 assets and scales to **20x speedup at 100 assets**. At portfolio sizes typical in practice (25-100 stocks), the GPU advantage is substantial.
 
 ### VRAM Usage (RTX 3060, 6 GB)
 
@@ -171,15 +177,20 @@ ctest --test-dir build -C Release --output-on-failure
 ### Run
 
 ```bash
-# Download real S&P 500 data (10 stocks, 2022-2024)
+# Download real S&P 500 data
 pip install -r scripts/requirements.txt
-python scripts/download_data.py
+python scripts/download_data.py                  # 10 stocks (default)
+python scripts/download_data.py --universe 50    # 48 stocks across 11 GICS sectors
 
 # Portfolio optimization (efficient frontier)
 ./build/Release/optimize --config config/optimize_sp500.json --output results/optimize_sp500/
 
+# 50-stock optimization (GPU, factor model, 100K scenarios, 10% position limits)
+./build/Release/optimize --config config/optimize_sp500_50.json --output results/optimize_sp500_50/
+
 # Backtest with strategy comparison
 ./build/Release/backtest --config config/backtest_sp500.json --output results/backtest_sp500/
+./build/Release/backtest --config config/backtest_sp500_50.json --output results/backtest_sp500_50/
 
 # Generate plots
 python scripts/plot_frontier.py results/optimize_sp500/frontier.csv -o docs/images/frontier.png
@@ -201,48 +212,52 @@ python scripts/generate_sample_data.py
 ./build/Release/backtest --config config/backtest_5asset.json --output results/backtest/
 ```
 
-## Example: Efficient Frontier
+## Example: 50-Stock Efficient Frontier (GPU)
 
 ```bash
-./build/Release/optimize --config config/optimize_sp500.json --output results/optimize_sp500/
+python scripts/download_data.py --universe 50
+./build/Release/optimize --config config/optimize_sp500_50.json --output results/optimize_sp500_50/
 ```
 
-Output (10 S&P 500 stocks: AAPL, MSFT, NVDA, GOOG, JPM, JNJ, XOM, PG, AMZN, V):
+Output (48 S&P 500 stocks across 11 GICS sectors, 100K scenarios, factor model, 10% position limits):
 ```
 Efficient Frontier (15 points)
     Target Ret Achieved Ret         CVaR  Iters  Conv
-     -0.000070     0.000334     0.016154    500    no
-      0.000122     0.000332     0.016151    232   yes
-      0.000507     0.000507     0.016689    498   yes
-      0.000699     0.000699     0.018242    500    no
-      0.001276     0.001275     0.027362    436   yes
-      0.001853     0.001852     0.041009     46   yes
-      0.002623     0.002620     0.069248     29   yes
+     -0.000760     0.000422     0.015333    500    no
+     -0.000518     0.000423     0.015331    163   yes
+      0.000448     0.000448     0.015342    206   yes
+      0.001173     0.001130     0.021537    341   yes
+      0.001656     0.001259     0.026338     75   yes
+      0.002623     0.001261     0.026956    315   yes
 
 Risk Decomposition (min-CVaR point):
-      AAPL: weight=0.0000  CVaR_j=0.000000  (0.0%)
-      MSFT: weight=0.0511  CVaR_j=0.000852  (5.3%)
-       JNJ: weight=0.3549  CVaR_j=0.005556  (34.4%)
-       XOM: weight=0.1597  CVaR_j=0.002638  (16.3%)
-        PG: weight=0.2953  CVaR_j=0.004795  (29.7%)
+       JNJ: weight=0.1000  CVaR_j=0.001321  (8.6%)
+       MCD: weight=0.1000  CVaR_j=0.001451  (9.5%)
+        PG: weight=0.1000  CVaR_j=0.001475  (9.6%)
+        KO: weight=0.1000  CVaR_j=0.001462  (9.5%)
+       PEP: weight=0.1000  CVaR_j=0.001491  (9.7%)
+       DUK: weight=0.0712  CVaR_j=0.001162  (7.6%)
+       ... (48 stocks, 23 with non-zero weight)
 ```
 
-Results are written to `results/optimize_sp500/frontier.csv` and `results/optimize_sp500/frontier_result.json`.
+The optimizer diversifies across defensive sectors (consumer staples, utilities, health care) at the 10% position cap, with component CVaR correctly summing to total.
+
+Results are written to `results/optimize_sp500_50/frontier.csv` and `results/optimize_sp500_50/frontier_result.json`.
 
 ## Example: Backtest
 
 ```bash
-./build/Release/backtest --config config/backtest_sp500.json --output results/backtest_sp500/
+./build/Release/backtest --config config/backtest_sp500_50.json --output results/backtest_sp500_50/
 ```
 
-4-strategy comparison on S&P 500 data (2023-2024, monthly rebalancing):
+4-strategy comparison on 48 S&P 500 stocks (2023-2024, monthly rebalancing, GPU-accelerated MeanCVaR):
 
-| Strategy | Total Return | Sharpe | Max Drawdown |
-|---|---|---|---|
-| EqualWeight | 101.6% | 3.10 | 8.5% |
-| MeanCVaR | 147.3% | 2.91 | 15.7% |
-| RiskParity | 67.1% | 2.61 | 7.7% |
-| MeanVariance | 30.3% | 1.44 | 8.2% |
+| Strategy | Total Return | Ann. Return | Sharpe | Max Drawdown |
+|---|---|---|---|---|
+| MeanCVaR | 68.7% | 30.2% | 2.24 | 9.8% |
+| EqualWeight | 50.8% | 23.1% | 2.00 | 9.4% |
+| RiskParity | 38.1% | 17.7% | 1.67 | 9.7% |
+| MeanVariance | 20.7% | 10.0% | 1.05 | 8.7% |
 
 Outputs equity curves, weights, and strategy comparison (CSV + JSON) for all four strategies.
 

@@ -1,0 +1,27 @@
+{
+    "price_csv_path": "data/sp500_50_prices.csv",
+    "covariance_method": "factor",
+    "factor_model": {
+        "n_factors": 10
+    },
+    "use_factor_mc": true,
+    "frontier_mode": true,
+    "use_gpu": true,
+    "monte_carlo": {
+        "n_scenarios": 100000,
+        "seed": 42
+    },
+    "admm": {
+        "confidence_level": 0.95,
+        "max_iter": 500
+    },
+    "constraints": {
+        "w_max": 0.10
+    },
+    "frontier": {
+        "n_points": 15,
+        "warm_start": true
+    },
+    "output_dir": "results/optimize_sp500_50",
+    "verbose": false
+}

@@ -40,6 +40,7 @@ struct OptimizeConfig {
 
     // ADMM settings.
     AdmmConfig admm_config;
+    double w_max_scalar = -1.0;              ///< Deferred w_max (applied after n_assets known).
 
     // Frontier settings.
     FrontierConfig frontier_config;

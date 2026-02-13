@@ -94,21 +94,11 @@ OptimizeConfig load_optimize_config(const std::string& json_path) {
             cfg.admm_config.verbose = a["verbose"].get<bool>();
     }
 
-    // Constraint parsing.
+    // Constraint parsing — store scalar; vectors built later when n_assets is known.
     if (j.contains("constraints")) {
         const auto& c = j["constraints"];
         if (c.contains("w_max")) {
-            int n = 0;
-            if (!cfg.mu_values.empty()) {
-                n = static_cast<int>(cfg.mu_values.size());
-            }
-            if (n > 0) {
-                cfg.admm_config.constraints.has_position_limits = true;
-                cfg.admm_config.constraints.position_limits.w_min =
-                    VectorXd::Zero(n);
-                cfg.admm_config.constraints.position_limits.w_max =
-                    VectorXd::Constant(n, c["w_max"].get<double>());
-            }
+            cfg.w_max_scalar = c["w_max"].get<double>();
         }
     }
 

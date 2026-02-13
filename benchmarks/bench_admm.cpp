@@ -61,7 +61,7 @@ static void BM_AdmmSolve(benchmark::State& state) {
     }
 }
 
-// 2/5/10 assets x 10K/50K scenarios (6 configs)
+// 2/5/10/25/50/75/100 assets x 10K/50K scenarios
 BENCHMARK(BM_AdmmSolve)
     ->Args({2, 10000})
     ->Args({2, 50000})
@@ -69,13 +69,17 @@ BENCHMARK(BM_AdmmSolve)
     ->Args({5, 50000})
     ->Args({10, 10000})
     ->Args({10, 50000})
+    ->Args({25, 50000})
+    ->Args({50, 50000})
+    ->Args({75, 50000})
+    ->Args({100, 50000})
     ->Unit(benchmark::kMillisecond);
 
 // ── Efficient frontier benchmarks ─────────────────────────────────
 
 static void BM_EfficientFrontier(benchmark::State& state) {
     const Index n_assets = static_cast<Index>(state.range(0));
-    const Index n_scenarios = 20000;
+    const Index n_scenarios = static_cast<Index>(state.range(1));
 
     auto [mu, chol] = make_test_data(n_assets);
 
@@ -102,11 +106,13 @@ static void BM_EfficientFrontier(benchmark::State& state) {
     }
 }
 
-// 5-point frontier for 3/5/10 assets
+// 5-point frontier for 3/5/10/25/50 assets
 BENCHMARK(BM_EfficientFrontier)
-    ->Args({3})
-    ->Args({5})
-    ->Args({10})
+    ->Args({3, 20000})
+    ->Args({5, 20000})
+    ->Args({10, 20000})
+    ->Args({25, 50000})
+    ->Args({50, 50000})
     ->Unit(benchmark::kMillisecond);
 
 // ── Full pipeline: scenario generation + ADMM solve ───────────────
@@ -134,10 +140,13 @@ static void BM_FullPipeline(benchmark::State& state) {
     }
 }
 
-// Full pipeline: 5/10 assets x 50K scenarios
+// Full pipeline: 5/10/25/50/100 assets x 50K scenarios
 BENCHMARK(BM_FullPipeline)
     ->Args({5, 50000})
     ->Args({10, 50000})
+    ->Args({25, 50000})
+    ->Args({50, 50000})
+    ->Args({100, 50000})
     ->Unit(benchmark::kMillisecond);
 
 // ── Full pipeline GPU: scenario generation + ADMM solve ─────────────
@@ -169,10 +178,13 @@ static void BM_FullPipeline_GPU(benchmark::State& state) {
     }
 }
 
-// Full pipeline GPU: 5/10 assets x 50K scenarios
+// Full pipeline GPU: 5/10/25/50/100 assets x 50K scenarios
 BENCHMARK(BM_FullPipeline_GPU)
     ->Args({5, 50000})
     ->Args({10, 50000})
+    ->Args({25, 50000})
+    ->Args({50, 50000})
+    ->Args({100, 50000})
     ->Unit(benchmark::kMillisecond);
 
 // ── GPU ADMM benchmarks ─────────────────────────────────────────────
@@ -218,13 +230,17 @@ BENCHMARK(BM_AdmmSolve_GPU)
     ->Args({5, 50000})
     ->Args({10, 10000})
     ->Args({10, 50000})
+    ->Args({25, 50000})
+    ->Args({50, 50000})
+    ->Args({75, 50000})
+    ->Args({100, 50000})
     ->Unit(benchmark::kMillisecond);
 
 // ── GPU efficient frontier benchmark ────────────────────────────────
 
 static void BM_EfficientFrontier_GPU(benchmark::State& state) {
     const Index n_assets = static_cast<Index>(state.range(0));
-    const Index n_scenarios = 20000;
+    const Index n_scenarios = static_cast<Index>(state.range(1));
 
     auto [mu, chol] = make_test_data(n_assets);
 
@@ -256,9 +272,11 @@ static void BM_EfficientFrontier_GPU(benchmark::State& state) {
 }
 
 BENCHMARK(BM_EfficientFrontier_GPU)
-    ->Args({3})
-    ->Args({5})
-    ->Args({10})
+    ->Args({3, 20000})
+    ->Args({5, 20000})
+    ->Args({10, 20000})
+    ->Args({25, 50000})
+    ->Args({50, 50000})
     ->Unit(benchmark::kMillisecond);
 
 BENCHMARK_MAIN();
