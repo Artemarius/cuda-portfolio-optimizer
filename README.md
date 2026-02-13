@@ -197,6 +197,9 @@ python scripts/download_data.py --universe 50    # 48 stocks across 11 GICS sect
 ./build/Release/backtest --config config/backtest_sp500.json --output results/backtest_sp500/
 ./build/Release/backtest --config config/backtest_sp500_50.json --output results/backtest_sp500_50/
 
+# Backtest with Ledoit-Wolf shrinkage
+./build/Release/backtest --config config/backtest_sp500_50_lw.json --output results/backtest_sp500_50_lw/
+
 # Generate plots
 python scripts/plot_frontier.py results/optimize_sp500/frontier.csv -o docs/images/frontier.png
 python scripts/plot_backtest.py results/backtest_sp500/ -o docs/images/equity_curves.png
@@ -298,6 +301,23 @@ With T/N = 15.6, the LW estimator applies only 1.8% shrinkage -- the sample cova
 | MeanVariance | 20.7% | 10.0% | 1.05 | 8.7% |
 
 Outputs equity curves, weights, and strategy comparison (CSV + JSON) for all four strategies.
+
+### With Ledoit-Wolf Shrinkage
+
+```bash
+./build/Release/backtest --config config/backtest_sp500_50_lw.json --output results/backtest_sp500_50_lw/
+```
+
+Same 4-strategy comparison with `"use_ledoit_wolf": true`. LW replaces the fixed shrinkage intensity (0.5) for MeanVariance and applies optimal shrinkage to the sample covariance used by MeanCVaR:
+
+| Strategy | Total Return | Ann. Return | Sharpe | Max Drawdown |
+|---|---|---|---|---|
+| MeanCVaR | 68.7% | 30.2% | 2.24 | 9.8% |
+| EqualWeight | 50.8% | 23.1% | 2.00 | 9.4% |
+| RiskParity | 38.1% | 17.7% | 1.67 | 9.7% |
+| MeanVariance | 22.8% | 10.9% | 1.12 | 10.2% |
+
+MeanVariance improves from 10.0% to 10.9% annualized return (Sharpe 1.05 to 1.12) with LW replacing the fixed 0.5 shrinkage -- the data-driven intensity adapts per rebalance window. MeanCVaR and the non-covariance strategies (EqualWeight, RiskParity) are unchanged.
 
 ## Validation
 
