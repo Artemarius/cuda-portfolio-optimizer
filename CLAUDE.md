@@ -130,6 +130,13 @@ All resolved via FetchContent except CUDA toolkit components. `git clone` + `cma
 5. **Component independence** — optimizer, simulator, and backtester are independently usable via the static library
 6. **Realistic constraints** — position limits, turnover, transaction costs. Not a toy optimizer
 
+## Upcoming Work (see ROADMAP.md)
+
+- **Phase 12 — ADMM convergence improvements**: over-relaxation (Boyd 2011 S3.4.3), Anderson acceleration (Zhang et al. 2020), backtracking line search, residual balancing (Wohlberg 2017). Goal: 15/15 frontier convergence at 50 stocks.
+- **Phase 13 — Black-Litterman model**: equilibrium returns + investor views → posterior mu_BL/Sigma_BL. Reference: He & Litterman 1999. Feeds into existing MC + ADMM pipeline.
+- **Phase 14 — Python bindings (pybind11)**: wrap `cuda_portfolio_lib` for Python/Jupyter. Eigen ↔ NumPy zero-copy. `GpuContext` for resource management.
+- **Phase 15 — GitHub Actions CI**: two-tier — build + CPU tests on hosted runners, full GPU suite on self-hosted.
+
 ## VRAM Budget (RTX 3060 6GB)
 
 Peak usage for the largest target configuration (100K scenarios × 500 assets):

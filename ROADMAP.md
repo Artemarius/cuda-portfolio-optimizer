@@ -590,9 +590,9 @@ This roadmap is structured for incremental development with testable deliverable
 
 ### Remaining (Optional)
 
-1. GitHub Actions CI (Windows + CUDA is hard in CI — deferred)
-2. Include sample output images in README (run plotting scripts, commit PNGs)
-3. Link from portfolio site (Artemarius.github.io)
+1. GitHub Actions CI — see Phase 15 below
+2. ~~Include sample output images in README~~ — done (docs/images/ committed in Phase 11)
+3. ~~Link from portfolio site (Artemarius.github.io)~~ — done
 
 ### Definition of Done
 
@@ -672,6 +672,317 @@ This roadmap is structured for incremental development with testable deliverable
 - GPU crossover point documented (~20 assets) ✅
 - 50-stock optimization and backtest produce valid results ✅
 - 173 tests still pass ✅
+
+---
+
+## Phase 12 — ADMM Convergence Improvements
+
+**Status:** Not started
+
+**Goal:** Achieve reliable convergence for 50-100 asset problems. Currently 12/15 frontier points converge at 50 stocks within 500 iterations — this phase targets 15/15.
+
+### Background
+
+The current ADMM solver uses vanilla proximal gradient descent for the x-update with a fixed learning rate and Boyd et al. 2011 adaptive rho. This works well up to ~25 assets but struggles at 50+ assets because:
+
+- The R-U objective landscape becomes increasingly ill-conditioned with more assets
+- Fixed learning rate `x_update_lr = 0.01` is conservative for large N (too slow) but unstable if increased naively
+- The proximal gradient x-update takes 20 inner steps per ADMM iteration — insufficient for high-dimensional subproblems
+- Adaptive rho oscillates between primal/dual balance without converging when both residuals are large
+
+### Improvements
+
+1. **Over-relaxation** (Boyd 2011 S3.4.3):
+   - Replace `x` with `alpha_k * x + (1 - alpha_k) * z_prev` in z-update and u-update
+   - Relaxation parameter `alpha_k ∈ [1.5, 1.8]` — theoretically improves convergence rate
+   - Single parameter addition to `AdmmConfig`, minimal code change
+   - Reference: Boyd et al. 2011, Eq. (3.19)-(3.20)
+
+2. **Adaptive x-update step count and learning rate**:
+   - Increase `x_update_steps` proportional to `n_assets` (e.g., `max(20, n_assets)`)
+   - Backtracking line search for `x_update_lr`: start aggressive, halve until objective decreases
+   - Armijo condition: `f(x - lr*grad) <= f(x) - c * lr * ||grad||^2` with `c = 1e-4`
+   - Eliminates the need to hand-tune learning rate per problem size
+
+3. **Anderson acceleration** (type-I, depth m=3-5):
+   - Accelerates the fixed-point iteration `(x,z,u) → (x+,z+,u+)` by extrapolating from the last m iterates
+   - Stores m previous residuals, solves a small least-squares problem (m×m) to find optimal mixing coefficients
+   - Restart when acceleration increases residual (safeguarded)
+   - Reference: Zhang, O'Donoghue, Boyd, *Globally Convergent Type-I Anderson Acceleration for Non-Smooth Fixed-Point Iterations*, SIAM J. Optim. 2020
+   - Implementation: ~50 lines in `admm_solver.cpp`, no GPU changes needed (operates on the n-dimensional weight vectors, not the N_scenarios-dimensional loss vectors)
+
+4. **Residual balancing (Wohlberg 2017)**:
+   - More sophisticated adaptive rho than Boyd's ratio test
+   - Targets `||r_pri|| / eps_pri ≈ ||r_dual|| / eps_dual` by adjusting rho to equalize normalized residuals
+   - Replace the current `if (r > mu * s) rho *= tau` with continuous rho update
+   - Reference: Wohlberg, *ADMM Penalty Parameter Selection by Residual Balancing*, 2017
+
+5. **Double-precision final refinement** (already partially implemented):
+   - After GPU float ADMM converges (or hits max_iter), run a few CPU double-precision ADMM iterations from the GPU solution as warm-start
+   - Polishes away float32 rounding in the final weights
+   - Extend to run more refinement iterations (currently limited) when GPU didn't converge
+
+### Tasks
+
+1. Add over-relaxation to `admm_solver.cpp` (both CPU and GPU paths)
+2. Implement backtracking line search in `x_update_cpu` and `x_update_gpu`
+3. Implement Anderson acceleration with safeguarded restart
+4. Add convergence benchmark: track iteration count vs problem size before/after
+5. Update efficient frontier to report convergence rate improvement
+6. Validate that all 173+ tests still pass and cross-validation tolerances hold
+
+### Success Criteria
+
+- 50-asset efficient frontier: 15/15 points converge (currently 12/15)
+- Average iteration count reduced by 30%+ for 50-asset problems
+- No regression on small problems (2-10 assets)
+- Cross-validation against cvxpy still within tolerance
+
+---
+
+## Phase 13 — Black-Litterman Model
+
+**Status:** Not started
+
+**Goal:** Implement the Black-Litterman model for combining market equilibrium returns with subjective views. Produces a posterior mu/Sigma that feeds directly into the existing Monte Carlo + ADMM pipeline.
+
+### Background
+
+The current pipeline estimates expected returns (mu) from historical sample means, which are notoriously noisy. Black-Litterman (1992) solves this by:
+
+1. Starting from **market equilibrium returns** (implied by market-cap weights and a risk aversion parameter)
+2. Blending in **investor views** (absolute or relative, with confidence levels)
+3. Producing a **posterior distribution** N(mu_BL, Sigma_BL) that tilts away from equilibrium only where views are expressed
+
+This is the industry standard for return estimation at most institutional asset managers.
+
+### Implementation Plan
+
+1. `src/models/black_litterman.h/cpp`:
+   - `BlackLittermanConfig` struct:
+     - `risk_aversion` (delta): scalar, default 2.5. Can be estimated from market Sharpe ratio: delta = (E[r_m] - r_f) / sigma_m^2
+     - `tau`: scalar uncertainty on equilibrium covariance (default 0.05). Controls how much views shift the posterior
+     - `views`: vector of `View` structs
+   - `View` struct:
+     - `P`: pick vector (1 × N) — which assets the view is about. Absolute view: P = [0,0,1,0,0] (asset 3). Relative view: P = [0,1,0,-1,0] (asset 2 outperforms asset 4)
+     - `q`: scalar — expected return (absolute) or return difference (relative)
+     - `confidence`: scalar in (0, 1] — maps to view uncertainty omega = (1/confidence - 1) * P * tau * Sigma * P'
+   - `BlackLittermanResult` struct: `mu_bl` (VectorXd), `sigma_bl` (MatrixXd), `implied_returns` (VectorXd)
+   - `compute_implied_returns(sigma, w_market, delta)` → pi = delta * Sigma * w_mkt (reverse optimization)
+   - `compute_black_litterman(sigma, w_market, views, config)` → `BlackLittermanResult`
+     - Posterior mean: mu_BL = [(tau * Sigma)^{-1} + P' * Omega^{-1} * P]^{-1} * [(tau * Sigma)^{-1} * pi + P' * Omega^{-1} * q]
+     - Posterior cov: Sigma_BL = Sigma + [(tau * Sigma)^{-1} + P' * Omega^{-1} * P]^{-1}
+     - Reference: He & Litterman, *The Intuition Behind Black-Litterman Model Portfolios*, Goldman Sachs, 1999
+
+2. Config integration:
+   - `OptimizeConfig`: add `use_black_litterman`, `BlackLittermanConfig`, `market_cap_weights` (or estimate equal-weight as fallback)
+   - `optimize_main.cpp`: if BL enabled, compute mu_BL/Sigma_BL before scenario generation
+   - Views specified in JSON config:
+     ```json
+     "views": [
+       {"assets": [2], "return": 0.10, "confidence": 0.8},
+       {"assets": [1, -3], "return": 0.02, "confidence": 0.6}
+     ]
+     ```
+
+3. Backtest integration:
+   - New `BlackLittermanStrategy` (or a flag on `MeanCVaRStrategy`): uses BL posterior for mu/Sigma estimation at each rebalance
+   - Market-cap weights can be loaded from CSV or estimated from price × shares data
+
+### Tests
+
+- Implied returns: known Sigma + w_mkt → verify pi = delta * Sigma * w_mkt
+- No views: posterior mu_BL = implied returns, Sigma_BL = (1 + tau) * Sigma
+- Single absolute view: posterior tilts toward viewed asset
+- Relative view: long/short pair reflects expected outperformance
+- High confidence → posterior near view; low confidence → posterior near equilibrium
+- Full pipeline: BL posterior → Monte Carlo scenarios → ADMM → valid efficient frontier
+- Cross-validation: 2-asset BL against analytical formula
+
+### Definition of Done
+
+- `compute_black_litterman()` produces correct posterior for known test cases
+- Views specified via JSON config, parsed and validated
+- Full pipeline works: BL → scenarios → ADMM → frontier
+- Backtest strategy available
+- All existing tests still pass
+
+---
+
+## Phase 14 — Python Bindings (pybind11)
+
+**Status:** Not started
+
+**Goal:** Wrap `cuda_portfolio_lib` with pybind11 so the GPU optimizer is callable from Python/Jupyter. Dramatically increases the audience — quant researchers can use the CUDA kernels without writing C++.
+
+### Scope
+
+Expose the core library functions, not the CLI apps. Users import the module and call functions directly:
+
+```python
+import cuda_portfolio as cpo
+
+# Generate correlated scenarios on GPU
+scenarios = cpo.generate_scenarios(mu, cov, n_scenarios=100_000, seed=42)
+
+# Compute risk
+risk = cpo.compute_risk(scenarios, weights, confidence=0.95)
+print(f"CVaR: {risk.cvar:.4f}, VaR: {risk.var:.4f}")
+
+# Optimize
+result = cpo.optimize(scenarios, mu, target_return=0.08, w_max=0.10)
+print(f"Weights: {result.weights}, CVaR: {result.cvar:.4f}")
+
+# Efficient frontier
+frontier = cpo.efficient_frontier(scenarios, mu, n_points=20)
+
+# Black-Litterman (Phase 13)
+bl = cpo.black_litterman(cov, market_weights, views, tau=0.05)
+```
+
+### Implementation Plan
+
+1. **Build system**:
+   - Add pybind11 via FetchContent
+   - New CMake target `cuda_portfolio_python` (`pybind11_add_module`)
+   - Conditional build: `option(BUILD_PYTHON_BINDINGS "Build pybind11 module" OFF)`
+   - Output: `cuda_portfolio.pyd` (Windows) / `cuda_portfolio.so` (Linux)
+
+2. **Binding layer** (`python/bindings.cpp`):
+   - Eigen ↔ NumPy zero-copy via pybind11's Eigen support (`#include <pybind11/eigen.h>`)
+   - Scenario generation: `generate_scenarios(mu, cov, n_scenarios, seed)` → numpy array
+   - Factor model: `fit_factor_model(returns, n_factors)` → FactorModelResult with numpy arrays
+   - Risk: `compute_risk(scenarios, weights, confidence)` → RiskResult (as Python dataclass or named dict)
+   - Optimizer: `optimize(scenarios, mu, config_dict)` → dict with weights, cvar, iterations
+   - Efficient frontier: `efficient_frontier(scenarios, mu, n_points, config_dict)` → list of dicts
+   - Backtest: potentially too complex for v1 — defer to v2
+
+3. **GPU resource management**:
+   - cuRAND states managed internally (create on first call, reuse, destroy on module unload)
+   - ScenarioMatrix stays on GPU between `generate_scenarios` and `optimize` when used together
+   - Context manager for explicit GPU memory control:
+     ```python
+     with cpo.GpuContext(seed=42) as ctx:
+         scenarios = ctx.generate_scenarios(mu, cov, 100_000)
+         result = ctx.optimize(scenarios, mu)
+     # GPU memory freed on exit
+     ```
+
+4. **Installation**:
+   - `pip install .` via `setup.py` or `pyproject.toml` with CMake extension
+   - Requires: CUDA toolkit + C++ compiler (same as building the library)
+   - Publish pre-built wheels for Windows + CUDA 12.x (stretch goal)
+
+5. **Example notebooks** (`notebooks/`):
+   - `01_quickstart.ipynb`: generate scenarios, optimize, plot frontier
+   - `02_backtest_comparison.ipynb`: compare strategies using Python plotting
+   - `03_black_litterman.ipynb`: BL views → GPU optimization
+
+### Tests
+
+- NumPy array round-trip: pass numpy array → get numpy array back, values match
+- GPU scenario generation from Python: mean/covariance convergence
+- Optimize from Python: matches C++ result for same inputs
+- Error handling: Python exceptions for invalid inputs (wrong dimensions, non-PD matrix)
+- Memory: no GPU memory leaks after repeated calls
+
+### Dependencies
+
+| Library | Purpose | Acquisition |
+|---|---|---|
+| pybind11 | C++/Python binding | FetchContent |
+| numpy | Array interop | pip (user's env) |
+| pytest | Python-side tests | pip (dev) |
+
+### Definition of Done
+
+- `import cuda_portfolio` works after `pip install .`
+- Core functions callable from Python with numpy arrays
+- GPU memory managed correctly (no leaks)
+- Example notebook runs end-to-end
+- README section with Python usage examples
+
+---
+
+## Phase 15 — GitHub Actions CI
+
+**Status:** Not started
+
+**Goal:** Automated build and test pipeline so every push and PR is verified. Demonstrates engineering rigor to reviewers.
+
+### Why This Is Hard
+
+CUDA CI on GitHub Actions is non-trivial because:
+
+- **GitHub-hosted runners have no GPU.** Standard `ubuntu-latest` / `windows-latest` runners lack NVIDIA hardware entirely. CUDA kernels cannot execute.
+- **CUDA Toolkit is large.** The full toolkit is ~4-6 GB. Installing it per-run adds 3-5 minutes and consumes cache budget.
+- **Windows + CUDA + Visual Studio** is the primary build target, but Windows runners are slower and more expensive (2x minute multiplier).
+
+### Strategy: Two-Tier CI
+
+Split into a **build-and-CPU-test tier** (runs on every push, no GPU needed) and an optional **GPU tier** (self-hosted runner or manual trigger).
+
+#### Tier 1 — Build + CPU Tests (GitHub-hosted, every push)
+
+Runs on `ubuntu-latest`. Installs CUDA toolkit (compiler only — no runtime GPU needed for compilation). Builds the full project and runs the subset of tests that don't require GPU execution.
+
+1. **CUDA Toolkit installation**: Use the [`Jimver/cuda-toolkit`](https://github.com/Jimver/cuda-toolkit) action. Install compiler components only (`cuda-compiler`, `cuda-cudart-dev`, `libcurand-dev`) — skip drivers and samples. Cache the installation via `actions/cache` keyed on toolkit version.
+2. **Build matrix**:
+   - Linux (ubuntu-latest) + GCC 12 + CUDA 12.8 + Ninja — primary CI target
+   - Windows (windows-latest) + MSVC 2022 + CUDA 12.8 — optional, expensive (2x minutes)
+3. **CMake configure + build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja && cmake --build build --config Release`
+4. **CPU-only tests**: Run tests that don't launch CUDA kernels. This requires a test filtering mechanism:
+   - Option A: Google Test `--gtest_filter=-*GPU*` naming convention — rename GPU-dependent tests to include `GPU` in the test name
+   - Option B: CMake `ctest -L cpu` label filtering — add `set_tests_properties(test_X PROPERTIES LABELS "cpu")` for CPU-safe tests
+   - Option C: Compile-time `#ifdef CUDA_AVAILABLE` guard — detect GPU at runtime, skip gracefully
+   - **Recommended: Option C** — `cudaGetDeviceCount()` at test startup, `GTEST_SKIP()` for GPU tests when count == 0. Zero changes to test naming, works locally and in CI identically.
+5. **What gets validated**:
+   - Compilation succeeds (catches syntax errors, missing includes, CUDA kernel compilation errors)
+   - All CPU-path code is correct: data loading, returns, projections, constraints, Cholesky, factor model fitting, backtest engine logic, report writers, config parsing
+   - ~60-70% of the test suite runs without a GPU
+
+#### Tier 2 — GPU Tests (self-hosted runner, manual/nightly)
+
+Full test suite including CUDA kernel execution. Only feasible with a self-hosted runner that has an NVIDIA GPU.
+
+1. **Self-hosted runner setup**: Personal machine (RTX 3060) registered as a GitHub Actions runner. Tagged with `self-hosted, gpu, cuda`.
+2. **Trigger**: `workflow_dispatch` (manual) or `schedule` (nightly cron). Not on every push — the machine isn't always on.
+3. **Runs**: Full `ctest --test-dir build -C Release --output-on-failure` + benchmarks.
+4. **Benchmark regression detection** (stretch goal): Save benchmark JSON output, compare against baseline, flag regressions > 10%.
+
+### Tasks
+
+1. Add runtime GPU detection utility:
+   - `src/utils/cuda_utils.h`: add `bool has_cuda_device()` — wraps `cudaGetDeviceCount`, returns false on error or count == 0
+   - Use in test fixtures: `if (!has_cuda_device()) GTEST_SKIP() << "No CUDA device";`
+2. Tag existing GPU-dependent tests:
+   - Audit each test file, add skip guard to tests that call CUDA kernels (monte_carlo GPU, risk GPU, ADMM GPU, component CVaR GPU, factor MC GPU, admm_kernels GPU)
+   - CPU tests (data, projections, constraints, backtest, reporting, factor model fit) run unchanged
+3. Create `.github/workflows/ci.yml`:
+   - Tier 1 job: `build-and-test-cpu` on `ubuntu-latest`
+   - Install CUDA toolkit via `Jimver/cuda-toolkit@v0.2.16` with caching
+   - Build with Ninja, run `ctest` (GPU tests auto-skip)
+4. Create `.github/workflows/gpu-tests.yml`:
+   - Tier 2 job: `test-gpu` on `[self-hosted, gpu]`
+   - `workflow_dispatch` + optional nightly cron
+   - Full test suite + benchmarks
+5. Add CI status badge to README
+
+### Estimated CI Run Times
+
+| Tier | Runner | CUDA Install | Build | Tests | Total |
+|---|---|---|---|---|---|
+| Tier 1 (cached) | ubuntu-latest | ~30s (cached) | ~2-3 min | ~10s | **~3-4 min** |
+| Tier 1 (cold) | ubuntu-latest | ~3-4 min | ~2-3 min | ~10s | **~6-7 min** |
+| Tier 2 | self-hosted GPU | 0 (pre-installed) | ~1-2 min | ~30s | **~2-3 min** |
+
+### Definition of Done
+
+- Every push to `main` triggers Tier 1 (build + CPU tests pass on Linux)
+- GPU tests gracefully skip with `GTEST_SKIP()` when no device is present
+- Self-hosted GPU workflow runs full suite on manual trigger
+- CI badge in README shows passing status
+- No test regressions — all 173+ tests still pass locally
 
 ---
 

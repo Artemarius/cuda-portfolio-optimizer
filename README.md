@@ -368,6 +368,19 @@ s.t.  mu'w >= target_return,  1'w = 1,  w >= 0,  constraints
 | Google Test | Unit tests | FetchContent |
 | Google Benchmark | CPU vs GPU benchmarks | FetchContent |
 
+## Roadmap
+
+Phases 1-11 are complete (build system through 50-stock demo). See [ROADMAP.md](ROADMAP.md) for full details.
+
+**Up next:**
+
+| Phase | Feature | Summary |
+|---|---|---|
+| 12 | ADMM Convergence | Over-relaxation, Anderson acceleration, backtracking line search. Target: 15/15 frontier points at 50 stocks |
+| 13 | Black-Litterman | Market equilibrium + investor views for return estimation. Posterior feeds into existing MC + ADMM pipeline |
+| 14 | Python Bindings | pybind11 wrapper with NumPy interop. Call GPU optimizer from Python/Jupyter |
+| 15 | GitHub Actions CI | Two-tier CI: build + CPU tests on hosted runners, full GPU suite on self-hosted |
+
 ## References
 
 1. Rockafellar & Uryasev, [Optimization of Conditional Value-at-Risk](https://doi.org/10.21314/JOR.2000.038), Journal of Risk 2000
