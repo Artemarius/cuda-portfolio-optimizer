@@ -9,6 +9,7 @@
 #include "data/returns.h"
 #include "models/factor_model.h"
 #include "models/factor_monte_carlo.h"
+#include "models/shrinkage_estimator.h"
 #include "optimizer/admm_solver.h"
 #include "optimizer/efficient_frontier.h"
 #include "optimizer/optimize_config.h"
@@ -145,6 +146,13 @@ int main(int argc, char* argv[]) {
             spdlog::info("Factor model: k={}, variance explained={:.1f}%",
                          factor_model->n_factors,
                          factor_model->variance_explained * 100.0);
+        } else if (cfg.use_ledoit_wolf) {
+            // Ledoit-Wolf optimal shrinkage covariance estimation.
+            spdlog::info("Estimating covariance with Ledoit-Wolf shrinkage...");
+            auto lw = cpo::ledoit_wolf_shrink(returns.returns);
+            mu = returns.returns.colwise().mean().transpose();
+            cov = std::move(lw.covariance);
+            spdlog::info("Ledoit-Wolf shrinkage intensity: {:.4f}", lw.intensity);
         } else {
             // Sample covariance estimation (default).
             mu = returns.returns.colwise().mean().transpose();

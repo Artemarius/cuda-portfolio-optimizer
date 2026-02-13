@@ -6,7 +6,7 @@
 src/
   core/          — Fundamental types, config, portfolio result structs
   data/          — Market data loader (CSV), return computation, universe definition
-  models/        — Return distribution models: PCA factor model, factor Monte Carlo, tiled generation
+  models/        — Return distribution models: PCA factor model, factor Monte Carlo, tiled generation, Ledoit-Wolf shrinkage
   simulation/    — GPU Monte Carlo scenario generator (correlated returns via Cholesky + cuRAND)
   risk/          — CVaR computation (CUDA), VaR, volatility, component CVaR decomposition
   optimizer/     — Convex optimizer: ADMM solver (C++/CUDA), projections, efficient frontier
@@ -163,7 +163,7 @@ No VRAM pressure. For scaling beyond 500 assets or 500K scenarios, tiled generat
 - **Cholesky decomposition:** Σ = LLᵀ → correlated samples = L × z where z ~ N(0,I)
 - **ADMM:** splits constrained optimization into simpler subproblems. See: Boyd et al., *Distributed Optimization and Statistical Learning via ADMM*, 2011. Adaptive ρ: §3.4.1
 - **Factor model:** R = Bf + ε, Σ = BΣ_f Bᵀ + D — reduces dimensionality of covariance estimation
-- **Shrinkage estimation:** Ledoit & Wolf, *Honey, I Shrunk the Sample Covariance Matrix*, 2004
+- **Shrinkage estimation:** Ledoit & Wolf, *Honey, I Shrunk the Sample Covariance Matrix*, J. Portfolio Management 30(4), 2004. Lemma 3.1 for the consistent estimator of optimal intensity. Implemented in `src/models/shrinkage_estimator.h`. Target: (trace(S)/N)*I. Intensity computed analytically: b²/d² where d² = ||S - μI||²_F/N and b̄² = (1/(T²N)) Σ_t ||x_t x_t' - S||²_F
 - **Simplex projection:** Duchi et al., *Efficient Projections onto the l1-Ball*, 2008
 
 ## Validation Strategy

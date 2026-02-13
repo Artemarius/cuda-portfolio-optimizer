@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include "models/factor_monte_carlo.h"
+#include "models/shrinkage_estimator.h"
 #include "simulation/cholesky_utils.h"
 
 namespace cpo {
@@ -136,7 +137,14 @@ AllocationResult MeanVarianceStrategy::allocate(const MatrixXd& returns,
     const Index n = static_cast<Index>(returns.cols());
 
     VectorXd mu = compute_sample_mean(returns);
-    MatrixXd cov = compute_sample_covariance(returns, config_.shrinkage_intensity);
+    MatrixXd cov;
+    if (config_.use_ledoit_wolf) {
+        auto lw = ledoit_wolf_shrink(returns);
+        cov = std::move(lw.covariance);
+        spdlog::debug("MeanVariance: Ledoit-Wolf intensity={:.4f}", lw.intensity);
+    } else {
+        cov = compute_sample_covariance(returns, config_.shrinkage_intensity);
+    }
 
     // LDLT decomposition for solving linear systems.
     Eigen::LDLT<MatrixXd> ldlt(cov);
@@ -221,6 +229,11 @@ AllocationResult MeanCVaRStrategy::allocate(const MatrixXd& returns,
     if (factor_result.has_value()) {
         mu = factor_result->mu;
         cov = reconstruct_covariance(*factor_result);
+    } else if (config_.use_ledoit_wolf) {
+        auto lw = ledoit_wolf_shrink(returns);
+        mu = compute_sample_mean(returns);
+        cov = std::move(lw.covariance);
+        spdlog::debug("MeanCVaR: Ledoit-Wolf intensity={:.4f}", lw.intensity);
     } else {
         mu = compute_sample_mean(returns);
         cov = compute_sample_covariance(returns);

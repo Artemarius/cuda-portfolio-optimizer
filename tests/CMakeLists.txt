@@ -88,3 +88,10 @@ target_link_libraries(test_component_cvar PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(test_component_cvar)
+
+add_executable(test_shrinkage test_shrinkage.cpp)
+target_link_libraries(test_shrinkage PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_shrinkage)

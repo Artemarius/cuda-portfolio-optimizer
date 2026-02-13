@@ -78,6 +78,7 @@ struct MeanVarianceConfig {
     ScalarCPU target_return = 0.0;       ///< Target return constraint.
     bool has_target_return = false;       ///< false = global min-variance.
     ScalarCPU shrinkage_intensity = 0.0;  ///< 0 = pure sample cov; (0,1) = shrink toward identity.
+    bool use_ledoit_wolf = false;        ///< Use Ledoit-Wolf optimal shrinkage (ignores shrinkage_intensity).
 };
 
 /// Mean-variance optimization using sample covariance + Eigen LDLT.
@@ -111,6 +112,7 @@ struct MeanCVaRConfig {
     bool use_factor_model = false;     ///< Use factor model for covariance estimation.
     FactorModelConfig factor_config;   ///< Factor model settings.
     bool use_factor_mc = false;        ///< Use factor MC kernel (vs full Cholesky MC).
+    bool use_ledoit_wolf = false;      ///< Use Ledoit-Wolf shrinkage for sample covariance path.
 };
 
 /// Mean-CVaR optimization: Monte Carlo scenario generation + ADMM solver.

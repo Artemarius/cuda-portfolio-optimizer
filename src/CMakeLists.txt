@@ -25,6 +25,7 @@ add_library(cuda_portfolio_lib STATIC
     models/factor_model.cpp
     models/factor_monte_carlo.cu
     models/tiled_scenario_generator.cu
+    models/shrinkage_estimator.cpp
 )
 
 target_include_directories(cuda_portfolio_lib PUBLIC

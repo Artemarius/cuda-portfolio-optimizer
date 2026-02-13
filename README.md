@@ -55,7 +55,7 @@ This project implements the full pipeline from scratch: return estimation, corre
 src/
   core/          Fundamental types, config, portfolio result structs
   data/          Market data loader (CSV), return computation, universe definition
-  models/        Return distribution models: PCA factor model, factor Monte Carlo
+  models/        Return distribution models: PCA factor model, factor Monte Carlo, Ledoit-Wolf shrinkage
   simulation/    GPU Monte Carlo scenario generator (correlated returns via Cholesky + cuRAND)
   risk/          CVaR computation (CUDA), VaR, volatility, drawdown metrics
   optimizer/     ADMM solver (C++/CUDA), projections, efficient frontier
@@ -64,7 +64,7 @@ src/
   reporting/     Efficient frontier, risk decomposition, strategy comparison (CSV/JSON)
   utils/         Timer, logging, CUDA helpers
 apps/            CLI executables (optimize, backtest)
-tests/           Google Test unit tests (173 tests)
+tests/           Google Test unit tests (188 tests)
 benchmarks/      GPU vs CPU performance comparison (Google Benchmark)
 scripts/         Python helpers: cvxpy validation, data generation, plotting
 ```
@@ -74,6 +74,8 @@ scripts/         Python helpers: cvxpy validation, data generation, plotting
 **Monte Carlo Scenario Generation (CUDA)** -- Covariance estimation from historical returns, Cholesky decomposition (CPU), correlated sample generation on GPU via cuRAND. Column-major scenario matrix layout for coalesced memory access.
 
 **Factor Model (PCA)** -- PCA-based covariance estimation: R = Bf + eps, Sigma = B*Sigma_f*B' + diag(D). Reduces estimation from N(N+1)/2 to Nk + k(k+1)/2 + N parameters. Auto-selection of k by variance explained threshold. Factor-based Monte Carlo kernel: O(Nk) per scenario vs O(N^2) for full Cholesky -- **15.6x speedup at 500 assets**.
+
+**Ledoit-Wolf Shrinkage** -- Optimal shrinkage covariance estimator (Ledoit & Wolf, 2004). Computes the analytically optimal shrinkage intensity toward a scaled-identity target, eliminating manual tuning. Especially valuable when T (sample size) is close to N (number of assets) -- exactly the regime of daily returns with dozens of stocks. Enable with `"use_ledoit_wolf": true` in any config JSON.
 
 **Risk Computation (CUDA)** -- Portfolio loss computation: one CUDA thread per scenario. VaR and CVaR via GPU-accelerated sort (CUB) + reduction. Component CVaR decomposition: per-asset risk contribution via two-pass threshold kernel (sum of components = total CVaR).
 
@@ -171,7 +173,7 @@ All dependencies (Eigen, nlohmann/json, spdlog, Google Test, Google Benchmark) a
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
-# 173 tests, all passing
+# 188 tests, all passing
 ```
 
 ### Run
@@ -269,6 +271,7 @@ Optimization results are validated at multiple levels:
 2. **Cross-reference** -- ADMM results compared against Python cvxpy + ECOS solver. Weight L-inf difference < 0.05 for small problems, CVaR relative difference < 10%
 3. **Statistical** -- Monte Carlo convergence tests (sample moments approach true parameters as N increases)
 4. **Structural** -- Efficient frontier monotonicity, CVaR >= VaR, constraint satisfaction
+5. **Shrinkage** -- Ledoit-Wolf intensity bounds, positive definiteness, symmetry, consistency with naive formula at same intensity, monotonicity (more data = less shrinkage)
 
 Cross-validation workflow:
 ```bash

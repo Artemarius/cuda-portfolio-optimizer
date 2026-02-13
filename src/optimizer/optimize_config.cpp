@@ -53,6 +53,9 @@ OptimizeConfig load_optimize_config(const std::string& json_path) {
     if (j.contains("use_factor_mc")) {
         cfg.use_factor_mc = j["use_factor_mc"].get<bool>();
     }
+    if (j.contains("use_ledoit_wolf")) {
+        cfg.use_ledoit_wolf = j["use_ledoit_wolf"].get<bool>();
+    }
 
     // Mode.
     if (j.contains("frontier_mode")) {

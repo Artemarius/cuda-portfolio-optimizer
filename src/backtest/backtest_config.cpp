@@ -108,6 +108,13 @@ BacktestConfig load_backtest_config(const std::string& json_path) {
             cfg.mv_target_return = mv["target_return"].get<double>();
             cfg.mv_has_target_return = true;
         }
+        if (mv.contains("use_ledoit_wolf"))
+            cfg.use_ledoit_wolf = mv["use_ledoit_wolf"].get<bool>();
+    }
+
+    // Top-level use_ledoit_wolf (applies to all strategies that use sample cov).
+    if (j.contains("use_ledoit_wolf")) {
+        cfg.use_ledoit_wolf = j["use_ledoit_wolf"].get<bool>();
     }
 
     // Transaction costs.

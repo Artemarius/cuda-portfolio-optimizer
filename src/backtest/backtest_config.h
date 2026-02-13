@@ -47,6 +47,9 @@ struct BacktestConfig {
     ScalarCPU mv_target_return = 0.0;
     bool mv_has_target_return = false;
 
+    // Ledoit-Wolf optimal shrinkage (applies to MeanVariance and MeanCVaR sample cov path).
+    bool use_ledoit_wolf = false;
+
     // Transaction costs.
     TransactionCostConfig transaction_costs;
 

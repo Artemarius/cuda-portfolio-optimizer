@@ -135,12 +135,14 @@ int main(int argc, char* argv[]) {
             mcfg.use_factor_model = cfg.use_factor_model;
             mcfg.factor_config = cfg.factor_config;
             mcfg.use_factor_mc = cfg.use_factor_mc;
+            mcfg.use_ledoit_wolf = cfg.use_ledoit_wolf;
             strategy = std::make_unique<cpo::MeanCVaRStrategy>(mcfg);
         } else if (sname == "MeanVariance") {
             cpo::MeanVarianceConfig mvcfg;
             mvcfg.shrinkage_intensity = cfg.shrinkage_intensity;
             mvcfg.target_return = cfg.mv_target_return;
             mvcfg.has_target_return = cfg.mv_has_target_return;
+            mvcfg.use_ledoit_wolf = cfg.use_ledoit_wolf;
             strategy = std::make_unique<cpo::MeanVarianceStrategy>(mvcfg);
         } else {
             strategy = cpo::create_strategy(sname);

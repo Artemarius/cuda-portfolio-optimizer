@@ -30,6 +30,7 @@ struct OptimizeConfig {
     std::string covariance_method = "sample";  ///< "sample" or "factor".
     FactorModelConfig factor_config;            ///< Factor model settings (used when covariance_method="factor").
     bool use_factor_mc = false;                 ///< Use factor MC kernel (vs full Cholesky MC).
+    bool use_ledoit_wolf = false;              ///< Use Ledoit-Wolf optimal shrinkage for sample cov path.
 
     // Mode.
     bool frontier_mode = false;              ///< Compute efficient frontier vs single solve.
