@@ -95,3 +95,24 @@ target_link_libraries(test_shrinkage PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(test_shrinkage)
+
+add_executable(test_anderson_acceleration test_anderson_acceleration.cpp)
+target_link_libraries(test_anderson_acceleration PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_anderson_acceleration)
+
+add_executable(test_line_search test_line_search.cpp)
+target_link_libraries(test_line_search PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_line_search)
+
+add_executable(test_convergence test_convergence.cpp)
+target_link_libraries(test_convergence PRIVATE
+    cuda_portfolio_lib
+    GTest::gtest_main
+)
+gtest_discover_tests(test_convergence)

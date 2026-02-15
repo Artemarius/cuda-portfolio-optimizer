@@ -95,6 +95,18 @@ OptimizeConfig load_optimize_config(const std::string& json_path) {
             cfg.admm_config.rel_tol = a["rel_tol"].get<double>();
         if (a.contains("verbose"))
             cfg.admm_config.verbose = a["verbose"].get<bool>();
+        if (a.contains("alpha_relax"))
+            cfg.admm_config.alpha_relax = a["alpha_relax"].get<double>();
+        if (a.contains("residual_balancing"))
+            cfg.admm_config.residual_balancing = a["residual_balancing"].get<bool>();
+        if (a.contains("rho_balance_tau"))
+            cfg.admm_config.rho_balance_tau = a["rho_balance_tau"].get<double>();
+        if (a.contains("anderson_depth"))
+            cfg.admm_config.anderson_depth = a["anderson_depth"].get<int>();
+        if (a.contains("x_update_lr"))
+            cfg.admm_config.x_update_lr = a["x_update_lr"].get<double>();
+        if (a.contains("x_update_steps"))
+            cfg.admm_config.x_update_steps = a["x_update_steps"].get<int>();
     }
 
     // Constraint parsing — store scalar; vectors built later when n_assets is known.

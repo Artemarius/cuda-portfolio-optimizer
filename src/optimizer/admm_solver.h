@@ -22,6 +22,14 @@
 ///   - General ADMM framework: Eq. (3.1)-(3.3)
 ///   - Adaptive rho: Section 3.4.1, Eq. (3.13)
 ///   - Convergence criteria: Section 3.3, Eq. (3.11)-(3.12)
+///   - Over-relaxation: Section 3.4.3, Eq. (3.19)-(3.20)
+///
+///   Wohlberg, "ADMM Penalty Parameter Selection by Residual Balancing",
+///   2017 — continuous adaptive rho via normalized residual balancing.
+///
+///   Zhang, O'Donoghue, Boyd, "Globally Convergent Type-I Anderson
+///   Acceleration for Non-Smooth Fixed-Point Iterations",
+///   SIAM J. Optim. 2020 — Anderson acceleration for ADMM.
 ///
 ///   Rockafellar & Uryasev, "Optimization of Conditional Value-at-Risk",
 ///   Journal of Risk, 2000 — CVaR reformulation.
@@ -46,10 +54,27 @@ struct AdmmConfig {
     ScalarCPU rho = 1.0;           ///< Initial penalty parameter.
     ScalarCPU rho_min = 1e-4;      ///< Minimum rho (adaptive).
     ScalarCPU rho_max = 1e4;       ///< Maximum rho (adaptive).
-    ScalarCPU tau_incr = 2.0;      ///< rho increase factor (Boyd 2011 Eq. 3.13).
-    ScalarCPU tau_decr = 2.0;      ///< rho decrease factor.
-    ScalarCPU mu_adapt = 10.0;     ///< Primal/dual residual ratio threshold.
+    ScalarCPU tau_incr = 2.0;      ///< rho increase factor (Boyd 2011 Eq. 3.13, legacy).
+    ScalarCPU tau_decr = 2.0;      ///< rho decrease factor (legacy).
+    ScalarCPU mu_adapt = 10.0;     ///< Primal/dual residual ratio threshold (legacy).
     bool adaptive_rho = true;      ///< Enable adaptive rho update.
+
+    /// Residual balancing (Wohlberg 2017) replaces Boyd's ratio test.
+    /// When enabled, rho is continuously adjusted to equalize normalized
+    /// primal/dual residuals: rho *= sqrt((r_pri/eps_pri)/(r_dual/eps_dual)).
+    /// Per-iteration rho change is clamped to [1/rho_balance_tau, rho_balance_tau].
+    bool residual_balancing = false;       ///< Use Wohlberg residual balancing.
+    ScalarCPU rho_balance_tau = 2.0;       ///< Max per-iteration rho change factor.
+
+    /// Over-relaxation (Boyd 2011, Section 3.4.3, Eq. 3.19-3.20).
+    /// Blends x and z_prev in z/u-update: x_hat = alpha * x + (1 - alpha) * z_prev.
+    /// alpha_relax = 1.0 recovers vanilla ADMM. Recommended range: [1.5, 1.8].
+    ScalarCPU alpha_relax = 1.0;   ///< Over-relaxation parameter (1.0 = vanilla).
+
+    /// Anderson acceleration depth (Zhang et al. 2020, type-I).
+    /// Stores the last m iterates to extrapolate the z/zeta fixed-point.
+    /// Set to 0 to disable. Recommended: 3-5.
+    int anderson_depth = 0;        ///< Anderson acceleration depth (0 = disabled).
 
     // Convergence criteria (Boyd 2011 Section 3.3).
     int max_iter = 500;            ///< Maximum ADMM iterations.
@@ -60,8 +85,10 @@ struct AdmmConfig {
     ConstraintSet constraints;
 
     // x-update parameters.
-    ScalarCPU x_update_lr = 0.01;  ///< Learning rate for proximal gradient x-update.
-    int x_update_steps = 20;       ///< Inner gradient steps per x-update.
+    ScalarCPU x_update_lr = 0.01;  ///< Initial learning rate for proximal gradient x-update
+                                    ///< (reduced by backtracking line search as needed).
+    int x_update_steps = 20;       ///< Inner gradient steps per x-update (auto-scaled
+                                    ///< to max(x_update_steps, n_assets) at runtime).
 
     // Logging.
     bool verbose = false;          ///< Print per-iteration convergence info.

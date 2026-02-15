@@ -64,7 +64,7 @@ src/
   reporting/     Efficient frontier, risk decomposition, strategy comparison (CSV/JSON)
   utils/         Timer, logging, CUDA helpers
 apps/            CLI executables (optimize, backtest)
-tests/           Google Test unit tests (188 tests)
+tests/           Google Test unit tests (223 tests)
 benchmarks/      GPU vs CPU performance comparison (Google Benchmark)
 scripts/         Python helpers: cvxpy validation, data generation, plotting
 ```
@@ -173,7 +173,7 @@ All dependencies (Eigen, nlohmann/json, spdlog, Google Test, Google Benchmark) a
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
-# 188 tests, all passing
+# 223 tests, all passing
 ```
 
 ### Run

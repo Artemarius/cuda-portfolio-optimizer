@@ -42,7 +42,7 @@ Library and executables are separate — `apps/` links against `cuda_portfolio_l
 - **Eigen3** for CPU-side linear algebra (covariance matrices, Cholesky decomposition)
 - **cuRAND** for GPU random number generation
 - **CUB** for GPU sort and reduction primitives (ships with CUDA 12.8)
-- **ADMM solver** implemented in C++/CUDA for the constrained Mean-CVaR optimization. GPU x-update via `k_evaluate_ru_objective` kernel with pre-allocated device buffers (`GpuAdmmBuffers`), CPU z-update/u-update (cheap projections), double-precision final refinement
+- **ADMM solver** implemented in C++/CUDA for the constrained Mean-CVaR optimization. GPU x-update via `k_evaluate_ru_objective` kernel with pre-allocated device buffers (`GpuAdmmBuffers`), CPU z-update/u-update (cheap projections), double-precision final refinement. Phase 12 improvements: over-relaxation, Anderson acceleration, backtracking line search, residual balancing (Wohlberg 2017)
 - **Opaque GPU buffer pattern**: `GpuAdmmBuffers` (like `CurandStates`) — struct defined in `.cuh`, forward-declared in `.h`, factory/deleter/guard in public API. Avoids per-call cudaMalloc/cudaFree (~6000 calls per ADMM solve)
 - **Dual precision strategy:** `float` for GPU scenario matrix and risk computation (throughput + VRAM), `double` for optimizer convergence checks and CPU-side estimation
 
@@ -132,7 +132,7 @@ All resolved via FetchContent except CUDA toolkit components. `git clone` + `cma
 
 ## Upcoming Work (see ROADMAP.md)
 
-- **Phase 12 — ADMM convergence improvements**: over-relaxation (Boyd 2011 S3.4.3), Anderson acceleration (Zhang et al. 2020), backtracking line search, residual balancing (Wohlberg 2017). Goal: 15/15 frontier convergence at 50 stocks.
+- **Phase 12 — ADMM convergence improvements** ✅: over-relaxation (Boyd 2011 S3.4.3), Anderson acceleration (Zhang et al. 2020), backtracking line search, residual balancing (Wohlberg 2017). 25-asset convergence from 1700+ (failing) to 264 iters. 223 tests passing.
 - **Phase 13 — Black-Litterman model**: equilibrium returns + investor views → posterior mu_BL/Sigma_BL. Reference: He & Litterman 1999. Feeds into existing MC + ADMM pipeline.
 - **Phase 14 — Python bindings (pybind11)**: wrap `cuda_portfolio_lib` for Python/Jupyter. Eigen ↔ NumPy zero-copy. `GpuContext` for resource management.
 - **Phase 15 — GitHub Actions CI**: two-tier — build + CPU tests on hosted runners, full GPU suite on self-hosted.

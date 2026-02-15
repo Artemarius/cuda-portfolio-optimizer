@@ -16,6 +16,8 @@ add_library(cuda_portfolio_lib STATIC
     optimizer/admm_kernels.cu
     optimizer/efficient_frontier.cpp
     optimizer/optimize_config.cpp
+    optimizer/anderson_acceleration.cpp
+    optimizer/line_search.cpp
     constraints/constraint_set.cpp
     backtest/transaction_costs.cpp
     backtest/strategy.cpp

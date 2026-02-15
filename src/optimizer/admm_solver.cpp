@@ -6,7 +6,10 @@
 
 #include <spdlog/spdlog.h>
 
+#include <memory>
+
 #include "optimizer/admm_kernels.h"
+#include "optimizer/anderson_acceleration.h"
 #include "optimizer/objective.h"
 #include "optimizer/projections.h"
 
@@ -60,9 +63,36 @@ VectorXd x_update_proximal(const MatrixXd& scenarios,
         // Gradient w.r.t. zeta (no augmented term for zeta).
         double grad_zeta = obj.grad_zeta;
 
-        // Gradient step.
-        x -= lr * grad_x;
-        zeta -= lr * grad_zeta;
+        // Current augmented objective value (for line search).
+        double augmented_value = obj.value
+            + (rho / 2.0) * (x - z_minus_u).squaredNorm();
+
+        // Backtracking line search on x (Armijo condition).
+        // f(x - lr*g) <= f(x) - c * lr * ||g||^2
+        // Nocedal & Wright (2006), Algorithm 3.1.
+        double grad_sq = grad_x.squaredNorm();
+        double step_lr = lr;
+        constexpr double armijo_c = 1e-4;
+        constexpr double bt_shrink = 0.5;
+        constexpr int max_bt_steps = 10;
+
+        for (int bt = 0; bt < max_bt_steps; ++bt) {
+            VectorXd x_trial = x - step_lr * grad_x;
+            auto trial_obj = evaluate_objective_cpu(
+                scenarios, x_trial, zeta, alpha);
+            double trial_augmented = trial_obj.value
+                + (rho / 2.0) * (x_trial - z_minus_u).squaredNorm();
+
+            if (trial_augmented <= augmented_value
+                                    - armijo_c * step_lr * grad_sq) {
+                break;  // Armijo condition satisfied.
+            }
+            step_lr *= bt_shrink;
+        }
+
+        // Gradient step with line-searched learning rate.
+        x -= step_lr * grad_x;
+        zeta -= lr * grad_zeta;  // Zeta uses fixed lr (cheap, 1D).
     }
 
     zeta_out = zeta;
@@ -125,9 +155,17 @@ AdmmResult admm_solve(const MatrixXd& scenarios,
     // Tail probability for R-U formulation.
     const double alpha = 1.0 - config.confidence_level;
 
+    // Auto-scale inner gradient steps to problem dimension.
+    const int effective_x_steps = std::max(config.x_update_steps, n_assets);
+
     spdlog::info("ADMM solver: {} scenarios x {} assets, alpha={:.4f}, "
                  "rho={:.4f}, max_iter={}",
                  n_scenarios, n_assets, alpha, config.rho, config.max_iter);
+    spdlog::info("ADMM config: alpha_relax={:.2f}, residual_balancing={}, "
+                 "anderson_depth={}, x_steps={}, lr={:.4f}",
+                 config.alpha_relax, config.residual_balancing,
+                 config.anderson_depth, effective_x_steps,
+                 config.x_update_lr);
 
     // ── Initialize variables ────────────────────────────────────────
     // x: primal variable (unconstrained iterate).
@@ -149,6 +187,13 @@ AdmmResult admm_solve(const MatrixXd& scenarios,
 
     double rho = config.rho;
 
+    // Anderson acceleration on the (z, zeta) fixed-point (Zhang et al. 2020).
+    std::unique_ptr<AndersonAccelerator> anderson;
+    if (config.anderson_depth > 0) {
+        anderson = std::make_unique<AndersonAccelerator>(
+            n_assets + 1, config.anderson_depth);
+    }
+
     AdmmResult result;
     result.history.reserve(config.max_iter);
 
@@ -160,18 +205,62 @@ AdmmResult admm_solve(const MatrixXd& scenarios,
 
     for (int iter = 0; iter < config.max_iter; ++iter) {
         z_prev = z;
+        double zeta_prev = zeta;
 
         // ── x-update: proximal gradient on augmented R-U objective ──
         VectorXd z_minus_u = z - u;
         x = x_update_proximal(scenarios, z_minus_u, x, zeta, alpha,
                                rho, config.x_update_lr,
-                               config.x_update_steps, zeta);
+                               effective_x_steps, zeta);
 
-        // ── z-update: project (x + u) onto constraint set ───────────
-        z = z_update(x + u, mu, config);
+        // ── Over-relaxation (Boyd 2011, S3.4.3, Eq. 3.19-3.20) ─────
+        // x_hat = alpha * x + (1 - alpha) * z_prev
+        VectorXd x_hat = config.alpha_relax * x
+                        + (1.0 - config.alpha_relax) * z_prev;
 
-        // ── u-update: dual variable ─────────────────────────────────
-        u = u + x - z;
+        // ── z-update: project (x_hat + u) onto constraint set ───────
+        z = z_update(x_hat + u, mu, config);
+
+        // ── u-update: dual variable (using x_hat) ───────────────────
+        u = u + x_hat - z;
+
+        // ── Anderson acceleration on z/zeta (Zhang et al. 2020) ─────
+        if (anderson) {
+            VectorXd state_prev(n_assets + 1);
+            state_prev.head(n_assets) = z_prev;
+            state_prev(n_assets) = zeta_prev;
+
+            VectorXd state_new(n_assets + 1);
+            state_new.head(n_assets) = z;
+            state_new(n_assets) = zeta;
+
+            VectorXd state_accel = anderson->accelerate(state_prev, state_new);
+
+            // Safeguard: accept only if accelerated state is finite and
+            // doesn't worsen the primal residual dramatically.
+            if (state_accel.allFinite()) {
+                VectorXd z_accel = state_accel.head(n_assets);
+                double zeta_accel = state_accel(n_assets);
+                VectorXd r_accel = x - z_accel;
+                if (r_accel.norm() <= 2.0 * (x - z).norm() + 1e-8) {
+                    z = z_accel;
+                    zeta = zeta_accel;
+                } else {
+                    anderson->reset();
+                    spdlog::debug("  Anderson restart at iter {}", iter);
+                }
+            } else {
+                anderson->reset();
+                spdlog::debug("  Anderson NaN restart at iter {}", iter);
+            }
+        }
+
+        // Bail out if x/z have become non-finite (numerical explosion).
+        if (!x.allFinite() || !z.allFinite() || !std::isfinite(zeta)) {
+            spdlog::warn("ADMM non-finite state at iter {}, aborting", iter);
+            result.iterations = iter + 1;
+            break;
+        }
 
         // ── Convergence check (Boyd 2011, Section 3.3) ──────────────
         // Primal residual: r = x - z
@@ -223,17 +312,47 @@ AdmmResult admm_solve(const MatrixXd& scenarios,
             break;
         }
 
-        // ── Adaptive rho update (Boyd 2011, Section 3.4.1) ──────────
-        // Eq. (3.13): balance primal and dual residuals.
+        // ── Adaptive rho update ──────────────────────────────────────
         if (config.adaptive_rho) {
-            if (primal_res > config.mu_adapt * dual_res) {
-                rho *= config.tau_incr;
-                u /= config.tau_incr;  // Rescale u to keep rho*u constant.
-            } else if (dual_res > config.mu_adapt * primal_res) {
-                rho /= config.tau_decr;
-                u *= config.tau_decr;
+            if (config.residual_balancing) {
+                // Wohlberg 2017: residual balancing.
+                // rho *= sqrt((r_pri/eps_pri) / (r_dual/eps_dual))
+                // clamped to [1/tau, tau] per iteration.
+                double ratio_pri = primal_res / std::max(eps_pri, 1e-15);
+                double ratio_dual = dual_res / std::max(eps_dual, 1e-15);
+                if (ratio_dual > 1e-15) {
+                    double rho_scale = std::sqrt(ratio_pri / ratio_dual);
+                    rho_scale = std::clamp(rho_scale,
+                                           1.0 / config.rho_balance_tau,
+                                           config.rho_balance_tau);
+                    double rho_new = rho * rho_scale;
+                    rho_new = std::clamp(rho_new, config.rho_min,
+                                         config.rho_max);
+                    if (rho_new != rho) {
+                        u *= (rho / rho_new);  // Rescale u to keep rho*u constant.
+                        rho = rho_new;
+                    }
+                }
+            } else {
+                // Legacy: Boyd 2011, Section 3.4.1, Eq. (3.13).
+                if (primal_res > config.mu_adapt * dual_res) {
+                    rho *= config.tau_incr;
+                    u /= config.tau_incr;
+                } else if (dual_res > config.mu_adapt * primal_res) {
+                    rho /= config.tau_decr;
+                    u *= config.tau_decr;
+                }
+                rho = std::clamp(rho, config.rho_min, config.rho_max);
             }
-            rho = std::clamp(rho, config.rho_min, config.rho_max);
+
+            // Reset Anderson history when rho changes significantly,
+            // since the fixed-point map has changed.
+            if (anderson && result.history.size() >= 2) {
+                double prev_rho = result.history[result.history.size() - 2].rho;
+                if (std::abs(rho - prev_rho) / std::max(prev_rho, 1e-15) > 0.1) {
+                    anderson->reset();
+                }
+            }
         }
 
         if (iter == config.max_iter - 1) {
@@ -314,9 +433,38 @@ VectorXd x_update_proximal_gpu(const ScenarioMatrix& scenarios_gpu,
         // Gradient w.r.t. zeta: dF/dzeta = 1 - count / (N * alpha)
         double grad_zeta = 1.0 - gpu_res.count_exceeding * inv_n_alpha;
 
-        // Gradient step.
-        x -= lr * grad_x;
-        zeta -= lr * grad_zeta;
+        // Current augmented objective value.
+        double obj_value = zeta + inv_n_alpha * gpu_res.value;
+        double augmented_value = obj_value
+            + (rho / 2.0) * (x - z_minus_u).squaredNorm();
+
+        // Backtracking line search on x (Armijo condition).
+        double grad_sq = grad_x.squaredNorm();
+        double step_lr = lr;
+        constexpr double armijo_c = 1e-4;
+        constexpr double bt_shrink = 0.5;
+        constexpr int max_bt_steps = 10;
+
+        for (int bt = 0; bt < max_bt_steps; ++bt) {
+            VectorXd x_trial = x - step_lr * grad_x;
+            VectorXs w_trial_f = x_trial.cast<float>();
+            auto trial_res = evaluate_objective_gpu(
+                scenarios_gpu, w_trial_f,
+                static_cast<float>(zeta), buffers);
+            double trial_obj = zeta + inv_n_alpha * trial_res.value;
+            double trial_augmented = trial_obj
+                + (rho / 2.0) * (x_trial - z_minus_u).squaredNorm();
+
+            if (trial_augmented <= augmented_value
+                                    - armijo_c * step_lr * grad_sq) {
+                break;
+            }
+            step_lr *= bt_shrink;
+        }
+
+        // Gradient step with line-searched learning rate.
+        x -= step_lr * grad_x;
+        zeta -= lr * grad_zeta;  // Zeta uses fixed lr (cheap, 1D).
     }
 
     zeta_out = zeta;
@@ -354,9 +502,16 @@ AdmmResult admm_solve(const ScenarioMatrix& scenarios_gpu,
 
     const double alpha = 1.0 - config.confidence_level;
 
+    const int effective_x_steps = std::max(config.x_update_steps, n_assets);
+
     spdlog::info("ADMM solver (GPU): {} scenarios x {} assets, alpha={:.4f}, "
                  "rho={:.4f}, max_iter={}",
                  n_scenarios, n_assets, alpha, config.rho, config.max_iter);
+    spdlog::info("ADMM config (GPU): alpha_relax={:.2f}, residual_balancing={}, "
+                 "anderson_depth={}, x_steps={}, lr={:.4f}",
+                 config.alpha_relax, config.residual_balancing,
+                 config.anderson_depth, effective_x_steps,
+                 config.x_update_lr);
 
     // Pre-allocate GPU buffers once (reused for ~6000 kernel calls).
     auto gpu_buffers = create_gpu_admm_buffers(n_assets);
@@ -381,25 +536,74 @@ AdmmResult admm_solve(const ScenarioMatrix& scenarios_gpu,
     double zeta = find_optimal_zeta(scenarios_cpu, z, alpha);
     double rho = config.rho;
 
+    // Anderson acceleration on the (z, zeta) fixed-point (Zhang et al. 2020).
+    std::unique_ptr<AndersonAccelerator> anderson;
+    if (config.anderson_depth > 0) {
+        anderson = std::make_unique<AndersonAccelerator>(
+            n_assets + 1, config.anderson_depth);
+    }
+
     AdmmResult result;
     result.history.reserve(config.max_iter);
 
     // ── ADMM iteration loop ─────────────────────────────────────────
     for (int iter = 0; iter < config.max_iter; ++iter) {
         z_prev = z;
+        double zeta_prev = zeta;
 
         // ── x-update: GPU-accelerated proximal gradient ─────────────
         VectorXd z_minus_u = z - u;
         x = x_update_proximal_gpu(scenarios_gpu, z_minus_u, x, zeta, alpha,
                                    rho, config.x_update_lr,
-                                   config.x_update_steps, zeta,
+                                   effective_x_steps, zeta,
                                    gpu_buffers.get());
 
-        // ── z-update: project (x + u) onto constraint set (CPU) ─────
-        z = z_update(x + u, mu, config);
+        // ── Over-relaxation (Boyd 2011, S3.4.3, Eq. 3.19-3.20) ─────
+        VectorXd x_hat = config.alpha_relax * x
+                        + (1.0 - config.alpha_relax) * z_prev;
 
-        // ── u-update: dual variable (CPU) ───────────────────────────
-        u = u + x - z;
+        // ── z-update: project (x_hat + u) onto constraint set (CPU) ─
+        z = z_update(x_hat + u, mu, config);
+
+        // ── u-update: dual variable (using x_hat) ───────────────────
+        u = u + x_hat - z;
+
+        // ── Anderson acceleration on z/zeta (Zhang et al. 2020) ─────
+        if (anderson) {
+            VectorXd state_prev(n_assets + 1);
+            state_prev.head(n_assets) = z_prev;
+            state_prev(n_assets) = zeta_prev;
+
+            VectorXd state_new(n_assets + 1);
+            state_new.head(n_assets) = z;
+            state_new(n_assets) = zeta;
+
+            VectorXd state_accel = anderson->accelerate(state_prev, state_new);
+
+            if (state_accel.allFinite()) {
+                VectorXd z_accel = state_accel.head(n_assets);
+                double zeta_accel = state_accel(n_assets);
+                VectorXd r_accel = x - z_accel;
+                if (r_accel.norm() <= 2.0 * (x - z).norm() + 1e-8) {
+                    z = z_accel;
+                    zeta = zeta_accel;
+                } else {
+                    anderson->reset();
+                    spdlog::debug("  Anderson restart (GPU) at iter {}", iter);
+                }
+            } else {
+                anderson->reset();
+                spdlog::debug("  Anderson NaN restart (GPU) at iter {}", iter);
+            }
+        }
+
+        // Bail out if x/z have become non-finite.
+        if (!x.allFinite() || !z.allFinite() || !std::isfinite(zeta)) {
+            spdlog::warn("ADMM (GPU) non-finite state at iter {}, aborting",
+                         iter);
+            result.iterations = iter + 1;
+            break;
+        }
 
         // ── Convergence check ───────────────────────────────────────
         VectorXd r = x - z;
@@ -447,14 +651,42 @@ AdmmResult admm_solve(const ScenarioMatrix& scenarios_gpu,
 
         // ── Adaptive rho update ─────────────────────────────────────
         if (config.adaptive_rho) {
-            if (primal_res > config.mu_adapt * dual_res) {
-                rho *= config.tau_incr;
-                u /= config.tau_incr;
-            } else if (dual_res > config.mu_adapt * primal_res) {
-                rho /= config.tau_decr;
-                u *= config.tau_decr;
+            if (config.residual_balancing) {
+                // Wohlberg 2017: residual balancing.
+                double ratio_pri = primal_res / std::max(eps_pri, 1e-15);
+                double ratio_dual = dual_res / std::max(eps_dual, 1e-15);
+                if (ratio_dual > 1e-15) {
+                    double rho_scale = std::sqrt(ratio_pri / ratio_dual);
+                    rho_scale = std::clamp(rho_scale,
+                                           1.0 / config.rho_balance_tau,
+                                           config.rho_balance_tau);
+                    double rho_new = rho * rho_scale;
+                    rho_new = std::clamp(rho_new, config.rho_min,
+                                         config.rho_max);
+                    if (rho_new != rho) {
+                        u *= (rho / rho_new);
+                        rho = rho_new;
+                    }
+                }
+            } else {
+                // Legacy: Boyd 2011, Section 3.4.1, Eq. (3.13).
+                if (primal_res > config.mu_adapt * dual_res) {
+                    rho *= config.tau_incr;
+                    u /= config.tau_incr;
+                } else if (dual_res > config.mu_adapt * primal_res) {
+                    rho /= config.tau_decr;
+                    u *= config.tau_decr;
+                }
+                rho = std::clamp(rho, config.rho_min, config.rho_max);
             }
-            rho = std::clamp(rho, config.rho_min, config.rho_max);
+
+            // Reset Anderson history when rho changes significantly.
+            if (anderson && result.history.size() >= 2) {
+                double prev_rho = result.history[result.history.size() - 2].rho;
+                if (std::abs(rho - prev_rho) / std::max(prev_rho, 1e-15) > 0.1) {
+                    anderson->reset();
+                }
+            }
         }
 
         if (iter == config.max_iter - 1) {
